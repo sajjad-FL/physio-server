@@ -5,7 +5,7 @@ import { createOtp, startOtpCleanupInterval, verifyOtpAttempt } from '../utils/o
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
-const DEBUG_OTP = String(process.env.DEBUG_OTP).toLowerCase() === 'true';
+const DEBUG_OTP = true;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
 if (!process.env.JWT_SECRET) {
