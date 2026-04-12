@@ -27,12 +27,12 @@ export async function requireAdmin(req, res, next) {
 
     const decoded = jwt.verify(bearer, JWT_SECRET);
     const ctx = await hydrateAuthFromDecoded(decoded);
-    if (!ctx?.roles?.includes('admin')) {
+    if (ctx?.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
     req.admin = true;
     req.auth = ctx;
-    req.user = { id: ctx.userId, phone: ctx.phone, roles: ctx.roles };
+    req.user = { id: ctx.userId, phone: ctx.phone, role: ctx.role };
     return requireCompleteProfile(req, res, next);
   } catch (err) {
     next(err);

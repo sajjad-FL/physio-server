@@ -97,12 +97,37 @@ export async function getWalletDashboard(req, res, next) {
   }
 }
 
+function buildNetAvailableSummaryRow(wallet) {
+  const online = Number(wallet.onlineAvailableBalance) || 0;
+  const due = Number(wallet.commissionDue) || 0;
+  const net = Number(wallet.availableBalance) || 0;
+  if (due < 1e-6) return null;
+  return {
+    _id: '__synthetic_net_available',
+    isSynthetic: true,
+    syntheticKind: 'net_available',
+    createdAt: new Date(),
+    type: 'online',
+    direction: 'credit',
+    totalAmount: net,
+    commission: 0,
+    physioEarning: net,
+    status: 'posted',
+    meta: {
+      onlineAvailableBalance: online,
+      commissionDue: due,
+      netWithdrawable: net,
+    },
+    bookingId: null,
+  };
+}
+
 export async function listWalletTransactions(req, res, next) {
   try {
     const physioId = req.physio.id;
     const { page, limit, skip } = readPagination(req.query);
 
-    const [list, total] = await Promise.all([
+    const [list, total, wallet] = await Promise.all([
       Transaction.find({ physioId })
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -110,10 +135,17 @@ export async function listWalletTransactions(req, res, next) {
         .populate('bookingId', 'date timeSlot serviceType payment')
         .lean(),
       Transaction.countDocuments({ physioId }),
+      page === 1 ? getComputedWallet(physioId) : Promise.resolve(null),
     ]);
 
+    let data = list;
+    if (page === 1 && wallet) {
+      const summary = buildNetAvailableSummaryRow(wallet);
+      if (summary) data = [summary, ...list];
+    }
+
     return res.json({
-      data: list,
+      data,
       total,
       page,
       totalPages: Math.max(1, Math.ceil(total / limit)),

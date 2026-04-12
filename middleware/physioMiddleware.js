@@ -1,9 +1,10 @@
+import mongoose from 'mongoose';
 import Physiotherapist from '../models/Physiotherapist.js';
 
 /** After authenticateJwt + requireRoles('physio'), load `req.physio`. */
 export async function attachPhysio(req, res, next) {
   const pid = req.auth?.physioId;
-  if (!pid) {
+  if (!pid || !mongoose.isValidObjectId(String(pid))) {
     return res.status(403).json({ message: 'Physiotherapist session required' });
   }
 

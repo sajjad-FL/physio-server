@@ -9,26 +9,69 @@ function roundMoney2(n) {
 }
 
 /**
- * Net position: Σ(credit totalAmount) − Σ(debit totalAmount) for posted rows.
+ * Withdrawable online earnings only:
+ * online earning credits - online debits/refunds - withdrawal debits.
  */
-export async function computeNetBalance(physioId) {
+export async function computeOnlineWithdrawable(physioId) {
   const oid = new mongoose.Types.ObjectId(physioId);
-  const rows = await Transaction.aggregate([
+  const [rows] = await Transaction.aggregate([
     { $match: { physioId: oid, status: POSTED } },
     {
       $group: {
-        _id: '$direction',
-        sum: { $sum: '$totalAmount' },
+        _id: null,
+        onlineCredits: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$type', 'online'] },
+                  { $eq: ['$direction', 'credit'] },
+                  { $eq: ['$meta.leg', 'earning'] },
+                ],
+              },
+              '$totalAmount',
+              0,
+            ],
+          },
+        },
+        onlineDebits: {
+          $sum: {
+            $cond: [
+              {
+                $or: [
+                  { $and: [{ $eq: ['$type', 'online'] }, { $eq: ['$direction', 'debit'] }] },
+                  { $and: [{ $eq: ['$type', 'withdrawal'] }, { $eq: ['$direction', 'debit'] }] },
+                ],
+              },
+              '$totalAmount',
+              0,
+            ],
+          },
+        },
       },
     },
   ]);
-  let credits = 0;
-  let debits = 0;
-  for (const r of rows) {
-    if (r._id === 'credit') credits = r.sum;
-    if (r._id === 'debit') debits = r.sum;
-  }
-  return roundMoney2(credits - debits);
+  const credits = Number(rows?.onlineCredits || 0);
+  const debits = Number(rows?.onlineDebits || 0);
+  return roundMoney2(Math.max(0, credits - debits));
+}
+
+/** Gross cash collected by physio from offline bookings. */
+export async function computeOfflineCollected(physioId) {
+  const oid = new mongoose.Types.ObjectId(physioId);
+  const [row] = await Transaction.aggregate([
+    {
+      $match: {
+        physioId: oid,
+        status: POSTED,
+        type: 'offline',
+        direction: 'credit',
+        'meta.leg': 'gross',
+      },
+    },
+    { $group: { _id: null, sum: { $sum: '$totalAmount' } } },
+  ]);
+  return roundMoney2(row?.sum ?? 0);
 }
 
 /**
@@ -114,18 +157,30 @@ export async function listAllPhysioWalletsSummary() {
 
   const ids = physios.map((p) => p._id);
 
-  const [netRows, offlineRows, setRows, earnedRows] = await Promise.all([
+  const [onlineRows, offlineGrossRows, offlineCommissionRows, onlineDebitRows, settlementRows] = await Promise.all([
     Transaction.aggregate([
-      { $match: { physioId: { $in: ids }, status: POSTED } },
       {
-        $project: {
-          physioId: 1,
-          signed: {
-            $cond: [{ $eq: ['$direction', 'credit'] }, '$totalAmount', { $multiply: ['$totalAmount', -1] }],
-          },
+        $match: {
+          physioId: { $in: ids },
+          status: POSTED,
+          type: 'online',
+          direction: 'credit',
+          'meta.leg': 'earning',
         },
       },
-      { $group: { _id: '$physioId', net: { $sum: '$signed' } } },
+      { $group: { _id: '$physioId', sum: { $sum: '$totalAmount' } } },
+    ]),
+    Transaction.aggregate([
+      {
+        $match: {
+          physioId: { $in: ids },
+          status: POSTED,
+          type: 'offline',
+          direction: 'credit',
+          'meta.leg': 'gross',
+        },
+      },
+      { $group: { _id: '$physioId', sum: { $sum: '$totalAmount' } } },
     ]),
     Transaction.aggregate([
       {
@@ -140,34 +195,52 @@ export async function listAllPhysioWalletsSummary() {
       { $group: { _id: '$physioId', sum: { $sum: '$totalAmount' } } },
     ]),
     Transaction.aggregate([
-      { $match: { physioId: { $in: ids }, status: POSTED, type: 'settlement', direction: 'debit' } },
+      {
+        $match: {
+          physioId: { $in: ids },
+          status: POSTED,
+          $or: [
+            { type: 'online', direction: 'debit' },
+            { type: 'withdrawal', direction: 'debit' },
+          ],
+        },
+      },
       { $group: { _id: '$physioId', sum: { $sum: '$totalAmount' } } },
     ]),
     Transaction.aggregate([
-      { $match: { physioId: { $in: ids }, status: POSTED, direction: 'credit' } },
-      { $group: { _id: '$physioId', sum: { $sum: '$physioEarning' } } },
+      { $match: { physioId: { $in: ids }, status: POSTED, type: 'settlement', direction: 'debit' } },
+      { $group: { _id: '$physioId', sum: { $sum: '$totalAmount' } } },
     ]),
   ]);
 
-  const netMap = new Map(netRows.map((r) => [String(r._id), roundMoney2(r.net)]));
-  const ocMap = new Map(offlineRows.map((r) => [String(r._id), r.sum]));
-  const stMap = new Map(setRows.map((r) => [String(r._id), r.sum]));
-  const teMap = new Map(earnedRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
+  const onlineMap = new Map(onlineRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
+  const offlineGrossMap = new Map(offlineGrossRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
+  const offlineCommissionMap = new Map(offlineCommissionRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
+  const onlineDebitMap = new Map(onlineDebitRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
+  const settlementMap = new Map(settlementRows.map((r) => [String(r._id), roundMoney2(r.sum ?? 0)]));
 
   return physios.map((p) => {
     const id = String(p._id);
-    const offlineC = ocMap.get(id) || 0;
-    const st = stMap.get(id) || 0;
-    const commissionDue = roundMoney2(Math.max(0, offlineC - st));
+    const onlineGross = onlineMap.get(id) || 0;
+    const onlineDebits = onlineDebitMap.get(id) || 0;
+    const onlineEarning = roundMoney2(Math.max(0, onlineGross - onlineDebits));
+    const offlineCollected = offlineGrossMap.get(id) || 0;
+    const offlineCommission = offlineCommissionMap.get(id) || 0;
+    const settlements = settlementMap.get(id) || 0;
+    const commissionDue = roundMoney2(Math.max(0, offlineCommission - settlements));
+    const netWithdrawable = roundMoney2(Math.max(0, onlineEarning - commissionDue));
     return {
       _id: p._id,
       name: p.name,
       phone: p.phone,
       specialization: p.specialization,
       wallet: {
-        totalEarned: teMap.get(id) ?? 0,
+        totalEarned: roundMoney2(onlineEarning + offlineCollected),
+        onlineEarning,
+        onlineAvailableBalance: onlineEarning,
+        offlineCollected,
         commissionDue,
-        availableBalance: netMap.get(id) ?? 0,
+        availableBalance: netWithdrawable,
       },
     };
   });
@@ -175,14 +248,21 @@ export async function listAllPhysioWalletsSummary() {
 
 /** Per-physio wallet-shaped object for API compatibility (no DB wallet field). */
 export async function getComputedWallet(physioId) {
-  const [netBalance, commissionDue, totalEarnedFromCredits] = await Promise.all([
-    computeNetBalance(physioId),
+  const [onlineEarning, offlineCollected, commissionDue] = await Promise.all([
+    computeOnlineWithdrawable(physioId),
+    computeOfflineCollected(physioId),
     computeCommissionDue(physioId),
-    computeTotalEarnedCredits(physioId),
   ]);
+  const onlineAvailableBalance = roundMoney2(onlineEarning);
+  const cd = roundMoney2(commissionDue);
+  const netWithdrawable = roundMoney2(Math.max(0, onlineAvailableBalance - cd));
   return {
-    totalEarned: totalEarnedFromCredits,
-    commissionDue,
-    availableBalance: netBalance,
+    totalEarned: roundMoney2(onlineEarning + offlineCollected),
+    onlineEarning: onlineAvailableBalance,
+    onlineAvailableBalance,
+    offlineCollected,
+    commissionDue: cd,
+    /** Amount the physio may withdraw (online pot minus offline commission owed). */
+    availableBalance: netWithdrawable,
   };
 }

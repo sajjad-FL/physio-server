@@ -1,8 +1,6 @@
-const store = new Map();
+import { normalizeIndianPhone } from './phoneIndia.js';
 
-function normalizePhone(phone) {
-  return String(phone || '').replace(/\D/g, '');
-}
+const store = new Map();
 
 function generateOtp() {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -12,10 +10,19 @@ function now() {
   return Date.now();
 }
 
-export function createOtp({ phone, ttlMinutes }) {
-  const normalized = normalizePhone(phone);
+function storeKey(purpose, normalizedPhone) {
+  return `${purpose}:${normalizedPhone}`;
+}
+
+/**
+ * @param {{ phone: string, ttlMinutes: number, purpose?: string }} opts
+ * purpose e.g. 'password_reset' — isolates OTP from other flows
+ */
+export function createOtp({ phone, ttlMinutes, purpose = 'default' }) {
+  const normalized = normalizeIndianPhone(phone);
   const otp = generateOtp();
-  store.set(normalized, {
+  const key = storeKey(purpose, normalized);
+  store.set(key, {
     otp,
     expiresAt: now() + Number(ttlMinutes) * 60 * 1000,
     attempts: 0,
@@ -23,51 +30,53 @@ export function createOtp({ phone, ttlMinutes }) {
   return { phone: normalized, otp };
 }
 
-export function verifyOtpAttempt({ phone, otp, maxAttempts }) {
-  const normalized = normalizePhone(phone);
-  const record = store.get(normalized);
+/**
+ * @param {{ phone: string, otp: string, maxAttempts: number, purpose?: string }} opts
+ */
+export function verifyOtpAttempt({ phone, otp, maxAttempts, purpose = 'default' }) {
+  const normalized = normalizeIndianPhone(phone);
+  const key = storeKey(purpose, normalized);
+  const record = store.get(key);
   if (!record) return { ok: false, reason: 'missing' };
 
   if (now() > record.expiresAt) {
-    store.delete(normalized);
+    store.delete(key);
     return { ok: false, reason: 'expired' };
   }
 
   if (record.attempts >= maxAttempts) {
-    store.delete(normalized);
+    store.delete(key);
     return { ok: false, reason: 'locked' };
   }
 
   if (record.otp !== String(otp)) {
     record.attempts += 1;
-    store.set(normalized, record);
+    store.set(key, record);
     if (record.attempts >= maxAttempts) {
-      store.delete(normalized);
+      store.delete(key);
       return { ok: false, reason: 'locked' };
     }
     return { ok: false, reason: 'mismatch' };
   }
 
-  store.delete(normalized);
+  store.delete(key);
   return { ok: true, phone: normalized };
 }
 
 export function cleanupExpired() {
   const ts = now();
-  for (const [phone, record] of store.entries()) {
-    if (ts > record.expiresAt) store.delete(phone);
+  for (const [key, record] of store.entries()) {
+    if (ts > record.expiresAt) store.delete(key);
   }
 }
 
 export function startOtpCleanupInterval({ intervalMinutes = 5 } = {}) {
   const ms = Number(intervalMinutes) * 60 * 1000;
   const id = setInterval(() => cleanupExpired(), ms);
-  // allow process to exit
   id.unref?.();
   return id;
 }
 
 export function _normalizePhoneForTests(phone) {
-  return normalizePhone(phone);
+  return normalizeIndianPhone(phone);
 }
-

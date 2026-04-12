@@ -33,6 +33,8 @@ const documentUrlsSchema = new mongoose.Schema(
     idProof: { type: String, trim: true, default: '' },
     registrationCertificate: { type: String, trim: true, default: '' },
     selfieWithId: { type: String, trim: true, default: '' },
+    /** Signed copy of platform NDA (required when admin has uploaded a template). */
+    signedNda: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );
@@ -54,8 +56,8 @@ const verificationSchema = new mongoose.Schema(
     },
     level: {
       type: String,
-      enum: ['basic', 'verified', 'premium'],
-      default: 'basic',
+      enum: ['not_verified', 'verified'],
+      default: 'not_verified',
     },
     rejectionReason: { type: String, trim: true, default: '' },
   },
@@ -64,7 +66,7 @@ const verificationSchema = new mongoose.Schema(
 
 const defaultVerification = () => ({
   status: 'pending',
-  level: 'basic',
+  level: 'not_verified',
   rejectionReason: '',
 });
 
@@ -92,6 +94,14 @@ const physiotherapistSchema = new mongoose.Schema(
     location: { type: String, required: true, trim: true },
     phone: { type: String, trim: true, unique: true, sparse: true },
     coordinates: { type: coordinatesSchema, default: null },
+    /** GeoJSON for $nearSphere queries (synced from `coordinates` on save). */
+    geoPoint: {
+      type: {
+        type: String,
+        enum: ['Point'],
+      },
+      coordinates: { type: [Number], default: undefined },
+    },
     availability: { type: Boolean, default: true },
     isAvailable: { type: Boolean, default: true },
     documents: { type: [documentSchema], default: [] },
@@ -126,5 +136,23 @@ physiotherapistSchema.pre('save', function syncAvailability(next) {
   }
   next();
 });
+
+physiotherapistSchema.pre('save', function syncGeoPoint(next) {
+  const lat = this.coordinates?.lat;
+  const lng = this.coordinates?.lng;
+  if (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng)
+  ) {
+    this.geoPoint = { type: 'Point', coordinates: [lng, lat] };
+  } else {
+    this.geoPoint = undefined;
+  }
+  next();
+});
+
+physiotherapistSchema.index({ geoPoint: '2dsphere' }, { sparse: true });
 
 export default mongoose.model('Physiotherapist', physiotherapistSchema);

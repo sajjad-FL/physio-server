@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { uploadsRoot } from '../config/upload.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
+import { normalizeRole } from '../utils/userRole.js';
 
 const GENDERS = new Set(['male', 'female', 'other', 'prefer_not_to_say']);
 
@@ -48,7 +50,7 @@ function parseEmail(input) {
   return ok ? email : null;
 }
 
-function parseAddressPayload(body) {
+export function parseAddressPayload(body) {
   const src = body || {};
   const hasAddress = Object.prototype.hasOwnProperty.call(src, 'address');
   const hasLegacy =
@@ -115,19 +117,30 @@ function toIsoDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString().slice(0, 10) : null;
 }
 
+function isValidPhysioObjectId(physioId) {
+  return physioId != null && physioId !== '' && mongoose.isValidObjectId(String(physioId));
+}
+
 export async function getProfile(req, res, next) {
   try {
     const userId = req.auth?.userId;
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
-    const user = await User.findById(userId).lean();
+    const user = await User.findById(userId)
+      .select(
+        'name email dob gender isProfileComplete phone role avatarUrl address location coordinates physioId isVerified hasPasswordLogin roles'
+      )
+      .lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const roles = user.roles || ['user'];
+    const role = normalizeRole(user);
     let physioProfile = null;
-    if (roles.includes('physio') && user.physioId) {
+    let physioVerification = null;
+    if (role === 'physio' && isValidPhysioObjectId(user.physioId)) {
       const physio = await Physiotherapist.findById(user.physioId)
-        .select('specialization experience pricePerSession avatar')
+        .select(
+          'specialization experience pricePerSession avatar verificationStatus isVerified verification verificationNote'
+        )
         .lean();
       if (physio) {
         if (user.avatarUrl && !physio.avatar) {
@@ -137,6 +150,11 @@ export async function getProfile(req, res, next) {
           specialization: physio.specialization || '',
           experience: Number.isFinite(physio.experience) ? physio.experience : 0,
           fees: Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0,
+        };
+        physioVerification = {
+          status: physio.verificationStatus || 'pending',
+          isVerified: physio.isVerified === true,
+          rejectionReason: physio.verification?.rejectionReason || '',
         };
       }
     }
@@ -148,10 +166,11 @@ export async function getProfile(req, res, next) {
       gender: user.gender || null,
       isProfileComplete: user.isProfileComplete === true,
       phone: user.phone,
-      roles,
+      role,
       avatarUrl: user.avatarUrl || '',
       address: profileAddress(user),
       physio: physioProfile,
+      physioVerification,
     });
   } catch (err) {
     next(err);
@@ -211,8 +230,8 @@ export async function patchProfile(req, res, next) {
     await user.save();
 
     let physioResponse = null;
-    const isPhysioRole = (user.roles || []).includes('physio');
-    if (user.physioId) {
+    const isPhysioRole = normalizeRole(user) === 'physio';
+    if (isValidPhysioObjectId(user.physioId)) {
       const physio = await Physiotherapist.findById(user.physioId);
       if (physio) {
         physio.name = name;
@@ -263,7 +282,7 @@ export async function patchProfile(req, res, next) {
       }
     }
 
-    const roles = user.roles || ['user'];
+    const role = normalizeRole(user);
     return res.json({
       name: user.name,
       email: user.email || '',
@@ -271,7 +290,7 @@ export async function patchProfile(req, res, next) {
       gender: user.gender,
       isProfileComplete: true,
       phone: user.phone,
-      roles,
+      role,
       avatarUrl: user.avatarUrl || '',
       address: profileAddress(user),
       physio: physioResponse,
@@ -306,7 +325,7 @@ export async function patchAvatar(req, res, next) {
     user.avatarUrl = publicPath;
     await user.save();
 
-    if (user.physioId) {
+    if (isValidPhysioObjectId(user.physioId)) {
       const physio = await Physiotherapist.findById(user.physioId);
       if (physio) {
         physio.avatar = publicPath;

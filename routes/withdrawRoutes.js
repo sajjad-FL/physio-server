@@ -9,6 +9,7 @@ import { authenticateJwt } from '../middleware/authenticateJwt.js';
 import { requireCompleteProfile } from '../middleware/requireCompleteProfile.js';
 import { requireRoles } from '../middleware/rbacMiddleware.js';
 import { attachPhysio } from '../middleware/physioMiddleware.js';
+import { requireApprovedPhysio } from '../middleware/requireApprovedPhysio.js';
 import { requireAdmin } from '../middleware/adminMiddleware.js';
 
 const router = Router();
@@ -16,17 +17,19 @@ const router = Router();
 router.get(
   '/pending',
   authenticateJwt,
-  requireCompleteProfile,
   requireRoles('physio'),
   attachPhysio,
+  requireApprovedPhysio,
+  requireCompleteProfile,
   getPendingWithdraw
 );
 router.post(
   '/',
   authenticateJwt,
-  requireCompleteProfile,
   requireRoles('physio'),
   attachPhysio,
+  requireApprovedPhysio,
+  requireCompleteProfile,
   createWithdrawRequest
 );
 

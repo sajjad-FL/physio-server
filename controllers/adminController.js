@@ -1,9 +1,12 @@
 import mongoose from 'mongoose';
+import { validateIndianMobile } from '../utils/phoneIndia.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { displayVerificationStatus } from '../utils/physioVerification.js';
 import Dispute from '../models/Dispute.js';
 import Booking from '../models/Booking.js';
+import WithdrawRequest from '../models/WithdrawRequest.js';
+import { listAllPhysioWalletsSummary } from '../utils/ledgerBalance.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { postOnlineRefundDebit } from '../services/ledger.js';
 
@@ -11,6 +14,56 @@ function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
   return { page, limit, skip: (page - 1) * limit };
+}
+
+/** Sidebar badges: actionable counts per admin section. */
+export async function getAdminNavCounts(_req, res, next) {
+  try {
+    const offlineQueueBase = {
+      serviceType: 'home',
+      homePlanPaymentMode: 'offline',
+      planStatus: 'approved',
+    };
+
+    const [
+      bookings,
+      payments,
+      withdrawals,
+      physiosPending,
+      verifications,
+      disputes,
+      walletRows,
+    ] = await Promise.all([
+      Booking.countDocuments({
+        status: 'pending',
+        $or: [{ physioId: null }, { physioId: { $exists: false } }],
+      }),
+      Booking.countDocuments({
+        ...offlineQueueBase,
+        'payment.status': { $in: ['pending', 'collected'] },
+      }),
+      WithdrawRequest.countDocuments({ status: 'pending' }),
+      Physiotherapist.countDocuments({ verificationStatus: 'pending' }),
+      Physiotherapist.countDocuments({ verificationStatus: { $ne: 'approved' } }),
+      Dispute.countDocuments({ status: { $in: ['open', 'under_review'] } }),
+      listAllPhysioWalletsSummary(),
+    ]);
+
+    const settlements = walletRows.filter((r) => Number(r.wallet?.commissionDue || 0) > 0.009).length;
+
+    return res.json({
+      bookings,
+      payments,
+      withdrawals,
+      settlements,
+      physios: physiosPending,
+      verifications,
+      disputes,
+      platform: 0,
+    });
+  } catch (err) {
+    next(err);
+  }
 }
 
 export async function listPhysioVerifications(req, res, next) {
@@ -43,9 +96,10 @@ export async function patchPhysioVerification(req, res, next) {
         if (!updates['verification.level']) updates['verification.level'] = 'verified';
       } else if (verificationStatus === 'rejected') {
         updates['verification.status'] = 'rejected';
-        updates['verification.level'] = 'basic';
+        updates['verification.level'] = 'not_verified';
       } else {
         updates['verification.status'] = 'pending';
+        updates['verification.level'] = 'not_verified';
       }
     }
     if (typeof verificationNote === 'string') {
@@ -198,7 +252,7 @@ export async function listAdminUsers(req, res, next) {
     }
 
     const list = await User.find(filter)
-      .select('name phone location roles physioId coordinates createdAt')
+      .select('name phone location role physioId coordinates createdAt')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -207,7 +261,7 @@ export async function listAdminUsers(req, res, next) {
       name: u.name,
       phone: u.phone,
       location: u.location,
-      roles: u.roles,
+      role: u.role || 'user',
       physioId: u.physioId,
       isLinkedPhysio: Boolean(u.physioId),
     }));
@@ -240,7 +294,11 @@ export async function createPhysioFromUser(req, res, next) {
       return res.status(400).json({ message: 'User must have a phone number' });
     }
 
-    const phoneNorm = String(user.phone).trim();
+    const pv = validateIndianMobile(user.phone);
+    if (!pv.valid) {
+      return res.status(400).json({ message: pv.message || 'User phone must be a valid 10-digit Indian mobile' });
+    }
+    const phoneNorm = pv.normalized;
     const phoneTaken = await Physiotherapist.findOne({ phone: phoneNorm }).lean();
     if (phoneTaken) {
       return res.status(409).json({ message: 'A physiotherapist with this phone already exists' });
@@ -277,9 +335,11 @@ export async function createPhysioFromUser(req, res, next) {
     });
 
     try {
+      if (user.phone !== phoneNorm) {
+        user.phone = phoneNorm;
+      }
       user.physioId = physio._id;
-      const roles = new Set([...(user.roles || []), 'user', 'physio']);
-      user.roles = Array.from(roles);
+      user.role = 'physio';
       await user.save();
     } catch (e) {
       await Physiotherapist.findByIdAndDelete(physio._id);
@@ -290,7 +350,7 @@ export async function createPhysioFromUser(req, res, next) {
       physio: physio.toObject(),
       user: {
         _id: user._id,
-        roles: user.roles,
+        role: user.role,
         physioId: user.physioId,
       },
     });
@@ -400,21 +460,12 @@ export async function verifyAdminPhysio(req, res, next) {
       return res.status(400).json({ message: 'status must be verified, approved, or rejected' });
     }
 
-    const levelRaw = String(req.body?.level || '').trim();
-    let level = 'verified';
-    if (approve) {
-      if (levelRaw === 'premium') level = 'premium';
-      else if (levelRaw === 'basic') level = 'basic';
-      else if (levelRaw === 'verified') level = 'verified';
-      else level = 'verified';
-    }
-
     const rejectionReason = reject ? String(req.body?.rejectionReason || '').trim() : '';
 
     const $set = approve
       ? {
           'verification.status': 'verified',
-          'verification.level': level,
+          'verification.level': 'verified',
           'verification.rejectionReason': '',
           verificationStatus: 'approved',
           status: 'approved',
@@ -422,7 +473,7 @@ export async function verifyAdminPhysio(req, res, next) {
         }
       : {
           'verification.status': 'rejected',
-          'verification.level': 'basic',
+          'verification.level': 'not_verified',
           'verification.rejectionReason': rejectionReason,
           verificationStatus: 'rejected',
           status: 'rejected',
@@ -435,6 +486,27 @@ export async function verifyAdminPhysio(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+export async function listPendingPhysios(_req, res, next) {
+  try {
+    const data = await Physiotherapist.find({ verificationStatus: 'pending' })
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export function approvePhysioAdmin(req, res, next) {
+  req.body = { ...(req.body || {}), status: 'approved' };
+  return verifyAdminPhysio(req, res, next);
+}
+
+export function rejectPhysioAdmin(req, res, next) {
+  req.body = { ...(req.body || {}), status: 'rejected' };
+  return verifyAdminPhysio(req, res, next);
 }
 
 export async function deleteAdminPhysio(req, res, next) {
@@ -460,7 +532,19 @@ export async function deleteAdminPhysio(req, res, next) {
     const physio = await Physiotherapist.findByIdAndDelete(id).lean();
     if (!physio) return res.status(404).json({ message: 'Physiotherapist not found' });
 
-    await User.updateMany({ physioId: id }, { $set: { physioId: null }, $pull: { roles: 'physio' } });
+    await User.updateMany(
+      { physioId: id },
+      [
+        {
+          $set: {
+            physioId: null,
+            role: {
+              $cond: [{ $eq: ['$role', 'physio'] }, 'user', '$role'],
+            },
+          },
+        },
+      ]
+    );
 
     return res.json({ ok: true, deletedId: id });
   } catch (err) {

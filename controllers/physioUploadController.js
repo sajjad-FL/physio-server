@@ -1,5 +1,6 @@
 import Physiotherapist from '../models/Physiotherapist.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
+import { isPhysioOnboardingLocked } from '../utils/physioVerification.js';
 
 async function persistFile(file, physioId, subpath) {
   if (file.buffer) {
@@ -14,6 +15,7 @@ async function persistFile(file, physioId, subpath) {
 function pendingVerificationUpdate() {
   return {
     'verification.status': 'pending',
+    'verification.level': 'not_verified',
     'verification.rejectionReason': '',
     verificationStatus: 'pending',
     status: 'pending',
@@ -24,6 +26,14 @@ function pendingVerificationUpdate() {
 export async function uploadDocuments(req, res, next) {
   try {
     const physioId = req.physio?.id;
+    const existingDoc = await Physiotherapist.findById(physioId).lean();
+    if (!existingDoc) return res.status(404).json({ message: 'Not found' });
+    if (isPhysioOnboardingLocked(existingDoc)) {
+      return res.status(403).json({
+        message: 'Documents cannot be updated after your profile is verified.',
+      });
+    }
+
     const degree = req.files?.degree?.[0];
     const idProof = req.files?.id_proof?.[0];
 
@@ -58,6 +68,14 @@ export async function uploadDocuments(req, res, next) {
 export async function uploadOnboardingFiles(req, res, next) {
   try {
     const physioId = req.physio?.id;
+    const existingUp = await Physiotherapist.findById(physioId).lean();
+    if (!existingUp) return res.status(404).json({ message: 'Not found' });
+    if (isPhysioOnboardingLocked(existingUp)) {
+      return res.status(403).json({
+        message: 'Onboarding uploads are locked after your profile is verified.',
+      });
+    }
+
     const f = req.files || {};
 
     const avatar = f.avatar?.[0];
@@ -65,8 +83,9 @@ export async function uploadOnboardingFiles(req, res, next) {
     const idProof = f.idProof?.[0] || f.id_proof?.[0];
     const registrationCertificate = f.registrationCertificate?.[0];
     const selfieWithId = f.selfieWithId?.[0];
+    const signedNda = f.signedNda?.[0];
 
-    if (!avatar && !certificate && !idProof && !registrationCertificate && !selfieWithId) {
+    if (!avatar && !certificate && !idProof && !registrationCertificate && !selfieWithId && !signedNda) {
       return res.status(400).json({ message: 'Provide at least one file' });
     }
 
@@ -97,6 +116,11 @@ export async function uploadOnboardingFiles(req, res, next) {
       const url = await persistFile(selfieWithId, physioId, 'selfie_id');
       $set['documentUrls.selfieWithId'] = url;
       newDocs.push({ type: 'selfie_with_id', url, uploadedAt: new Date() });
+    }
+    if (signedNda) {
+      const url = await persistFile(signedNda, physioId, 'signed_nda');
+      $set['documentUrls.signedNda'] = url;
+      newDocs.push({ type: 'signed_nda', url, uploadedAt: new Date() });
     }
 
     const update = { $set };

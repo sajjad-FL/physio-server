@@ -27,20 +27,20 @@ export async function requireNotesAccess(req, res, next) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    if (ctx.roles.includes('admin')) {
+    if (ctx.role === 'admin') {
       req.admin = true;
       req.auth = ctx;
-      req.user = { id: ctx.userId, roles: ctx.roles };
+      req.user = { id: ctx.userId, role: ctx.role };
       return requireCompleteProfile(req, res, next);
     }
 
-    if (ctx.roles.includes('physio') && ctx.physioId) {
+    if (ctx.role === 'physio' && ctx.physioId) {
       req.physio = { id: ctx.physioId };
       req.auth = ctx;
       return requireCompleteProfile(req, res, next);
     }
 
-    if (ctx.roles.includes('user')) {
+    if (ctx.role === 'user') {
       const user = await User.findById(ctx.userId).lean();
       if (user?.isVerified) {
         req.user = { id: user._id.toString() };

@@ -1,40 +1,58 @@
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
+import { normalizeRole } from './userRole.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+export const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
-function mergeRoles(existing, additions) {
-  const set = new Set([...(Array.isArray(existing) ? existing : []), ...additions]);
-  return Array.from(set);
+function canAuthenticateUser(user) {
+  if (!user) return false;
+  return Boolean(
+    user.isVerified || user.hasPasswordLogin || user.passwordHash,
+  );
 }
 
 /**
  * Hydrate auth context from a verified JWT payload + DB.
  * @param {object} decoded
- * @returns {Promise<{ userId: string, roles: string[], phone?: string, physioId: string | null } | null>}
+ * @returns {Promise<{ userId: string, role: 'user'|'physio'|'admin', phone?: string, physioId: string | null, isProfileComplete: boolean } | null>}
  */
 export async function hydrateAuthFromDecoded(decoded) {
   if (!decoded || typeof decoded !== 'object') return null;
 
-  const userId = decoded.userId || null;
+  const candidateUserId = decoded.userId || decoded.sub || null;
 
-  // New format: userId + roles on token (roles refreshed from DB below)
-  if (userId) {
-    const user = await User.findById(userId).lean();
-    if (!user || !user.isVerified) return null;
-    return {
-      userId: user._id.toString(),
-      roles: Array.isArray(user.roles) && user.roles.length ? user.roles : ['user'],
-      phone: user.phone,
-      physioId: user.physioId ? user.physioId.toString() : null,
-      isProfileComplete: user.isProfileComplete === true,
-    };
+  if (candidateUserId && mongoose.isValidObjectId(String(candidateUserId))) {
+    const user = await User.findById(candidateUserId).select('+passwordHash').lean();
+    if (user && canAuthenticateUser(user)) {
+      const role = normalizeRole(user);
+      let physioId = user.physioId ? user.physioId.toString() : null;
+      if (
+        role === 'physio' &&
+        !physioId &&
+        decoded.physioId &&
+        mongoose.isValidObjectId(String(decoded.physioId))
+      ) {
+        physioId = String(decoded.physioId);
+      }
+      return {
+        userId: user._id.toString(),
+        role,
+        phone: user.phone,
+        physioId,
+        isProfileComplete: user.isProfileComplete === true,
+      };
+    }
   }
 
-  // Legacy: physiotherapist token (sub was physio id)
-  if (decoded.role === 'physio' && decoded.physioId) {
-    const physio = await Physiotherapist.findById(decoded.physioId).lean();
+  // Legacy: physiotherapist token (often `sub` was physio id, sometimes `physioId`).
+  const legacyPhysioId =
+    decoded.role === 'physio'
+      ? decoded.physioId || decoded.sub || null
+      : null;
+  if (legacyPhysioId && mongoose.isValidObjectId(String(legacyPhysioId))) {
+    const physio = await Physiotherapist.findById(legacyPhysioId).lean();
     if (!physio?.phone) return null;
 
     let user =
@@ -43,11 +61,11 @@ export async function hydrateAuthFromDecoded(decoded) {
         phone: physio.phone,
         name: physio.name,
         isVerified: true,
-        roles: mergeRoles([], ['user', 'physio']),
+        role: 'physio',
         physioId: physio._id,
       }));
 
-    user.roles = mergeRoles(user.roles, ['user', 'physio']);
+    user.role = 'physio';
     user.physioId = physio._id;
     user.isVerified = true;
     await user.save();
@@ -55,26 +73,10 @@ export async function hydrateAuthFromDecoded(decoded) {
     const fresh = await User.findById(user._id).lean();
     return {
       userId: fresh._id.toString(),
-      roles: fresh.roles,
+      role: normalizeRole(fresh),
       phone: fresh.phone,
-      physioId: fresh.physioId ? fresh.physioId.toString() : String(decoded.physioId),
+      physioId: fresh.physioId ? fresh.physioId.toString() : String(legacyPhysioId),
       isProfileComplete: fresh.isProfileComplete === true,
-    };
-  }
-
-  // Legacy: patient token (sub = user id)
-  const legacyUserId = decoded.sub;
-  if (legacyUserId && decoded.role !== 'physio') {
-    const user = await User.findById(legacyUserId).lean();
-    if (!user || !user.isVerified) return null;
-    const roles =
-      Array.isArray(user.roles) && user.roles.length ? user.roles : mergeRoles([], ['user']);
-    return {
-      userId: user._id.toString(),
-      roles,
-      phone: user.phone,
-      physioId: user.physioId ? user.physioId.toString() : null,
-      isProfileComplete: user.isProfileComplete === true,
     };
   }
 
@@ -82,9 +84,13 @@ export async function hydrateAuthFromDecoded(decoded) {
 }
 
 export async function resolveAuthFromBearer(bearer) {
-  if (!bearer) return null;
-  const decoded = jwt.verify(bearer, JWT_SECRET);
-  return hydrateAuthFromDecoded(decoded);
+  if (!bearer || typeof bearer !== 'string') return null;
+  const trimmed = bearer.trim();
+  if (!trimmed) return null;
+  try {
+    const decoded = jwt.verify(trimmed, JWT_SECRET);
+    return await hydrateAuthFromDecoded(decoded);
+  } catch {
+    return null;
+  }
 }
-
-export { JWT_SECRET };

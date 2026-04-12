@@ -1,7 +1,7 @@
 import { resolveAuthFromBearer } from '../utils/authResolve.js';
 
 /**
- * Verifies JWT, loads User roles from DB, sets req.auth and req.user.
+ * Verifies JWT, loads User role from DB, sets req.auth and req.user.
  */
 export async function authenticateJwt(req, res, next) {
   try {
@@ -17,7 +17,7 @@ export async function authenticateJwt(req, res, next) {
     }
 
     req.auth = ctx;
-    req.user = { id: ctx.userId, phone: ctx.phone, roles: ctx.roles };
+    req.user = { id: ctx.userId, phone: ctx.phone, role: ctx.role };
     next();
   } catch {
     return res.status(401).json({ message: 'Unauthorized' });

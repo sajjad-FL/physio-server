@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
 import Dispute from '../models/Dispute.js';
+import Physiotherapist from '../models/Physiotherapist.js';
+import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 
 function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
@@ -28,9 +30,9 @@ export async function raiseDispute(req, res, next) {
     if (!ctx) return res.status(401).json({ message: 'Unauthorized' });
 
     const canAsUser =
-      ctx.roles.includes('user') && booking.userId?.toString() === ctx.userId;
+      ctx.role === 'user' && booking.userId?.toString() === ctx.userId;
     const canAsPhysio =
-      ctx.roles.includes('physio') &&
+      ctx.role === 'physio' &&
       ctx.physioId &&
       booking.physioId?.toString() === ctx.physioId;
 
@@ -41,6 +43,13 @@ export async function raiseDispute(req, res, next) {
       raisedBy = 'user';
       raiserUserId = ctx.userId;
     } else if (canAsPhysio) {
+      const physioDoc = await Physiotherapist.findById(ctx.physioId).lean();
+      if (!isPhysioPlatformApproved(physioDoc)) {
+        return res.status(403).json({
+          message: 'Your profile is under approval',
+          code: 'PHYSIO_PENDING',
+        });
+      }
       raisedBy = 'physio';
       raiserPhysioId = ctx.physioId;
     } else {
@@ -92,11 +101,14 @@ export async function listMyDisputes(req, res, next) {
     if (!ctx) return res.status(401).json({ message: 'Unauthorized' });
 
     const sets = [];
-    if (ctx.roles.includes('user')) {
+    if (ctx.role === 'user') {
       sets.push(await Booking.find({ userId: ctx.userId }).distinct('_id'));
     }
-    if (ctx.roles.includes('physio') && ctx.physioId) {
-      sets.push(await Booking.find({ physioId: ctx.physioId }).distinct('_id'));
+    if (ctx.role === 'physio' && ctx.physioId) {
+      const physioDoc = await Physiotherapist.findById(ctx.physioId).lean();
+      if (isPhysioPlatformApproved(physioDoc)) {
+        sets.push(await Booking.find({ physioId: ctx.physioId }).distinct('_id'));
+      }
     }
     const bookingIds = [...new Set(sets.flat())];
 

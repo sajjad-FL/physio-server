@@ -1,4 +1,6 @@
 import Physiotherapist from '../models/Physiotherapist.js';
+import PlatformSettings from '../models/PlatformSettings.js';
+import { isPhysioOnboardingLocked, isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import {
   validateBasicSection,
   validateQualificationSection,
@@ -41,7 +43,12 @@ export async function getOnboarding(req, res, next) {
   try {
     const physio = await Physiotherapist.findById(req.physio.id).lean();
     if (!physio) return res.status(404).json({ message: 'Not found' });
-    return res.json(physio);
+    const onboardingLocked = isPhysioOnboardingLocked(physio);
+    return res.json({
+      ...physio,
+      onboardingLocked,
+      platformApproved: isPhysioPlatformApproved(physio),
+    });
   } catch (err) {
     next(err);
   }
@@ -50,6 +57,14 @@ export async function getOnboarding(req, res, next) {
 export async function patchOnboarding(req, res, next) {
   try {
     const pid = req.physio.id;
+    const existingPatch = await Physiotherapist.findById(pid).lean();
+    if (!existingPatch) return res.status(404).json({ message: 'Not found' });
+    if (isPhysioOnboardingLocked(existingPatch)) {
+      return res.status(403).json({
+        message: 'Onboarding cannot be edited after your profile is verified.',
+      });
+    }
+
     const { step, basic, qualification, practice } = req.body || {};
 
     if (basic !== undefined) {
@@ -161,7 +176,15 @@ export async function submitOnboarding(req, res, next) {
     const existing = await Physiotherapist.findById(pid).lean();
     if (!existing) return res.status(404).json({ message: 'Not found' });
 
-    const { ok, errors } = validateSubmitReady(existing);
+    if (isPhysioOnboardingLocked(existing)) {
+      return res.status(403).json({
+        message: 'Your profile is already verified. You do not need to submit again.',
+      });
+    }
+
+    const ndaDoc = await PlatformSettings.findById('singleton').lean();
+    const requireSignedNda = Boolean(String(ndaDoc?.physioNdaTemplateUrl || '').trim());
+    const { ok, errors } = validateSubmitReady(existing, { requireSignedNda });
     if (!ok) {
       return sendValidationError(
         res,
@@ -179,6 +202,7 @@ export async function submitOnboarding(req, res, next) {
             'onboarding.submittedAt': new Date(),
             'onboarding.currentStep': 5,
             'verification.status': 'pending',
+            'verification.level': 'not_verified',
             'verification.rejectionReason': '',
             verificationStatus: 'pending',
             status: 'pending',

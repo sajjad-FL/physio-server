@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import Razorpay from 'razorpay';
 import Booking from '../models/Booking.js';
-import { assignPhysioForBooking } from '../utils/assignPhysio.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
@@ -120,7 +119,9 @@ export async function verifyPayment(req, res, next) {
     booking.razorpayPaymentId = razorpay_payment_id;
     booking.heldAt = new Date();
     booking.paidAt = booking.paidAt || new Date();
-    booking.sessionStatus = 'scheduled';
+    if (booking.physioId) {
+      booking.sessionStatus = 'scheduled';
+    }
     booking.amountPaise = booking.amountPaise || amountPaise;
     booking.payment = {
       mode: 'online',
@@ -135,16 +136,8 @@ export async function verifyPayment(req, res, next) {
 
     await booking.populate('userId', 'phone location coordinates name');
 
-    const userCoords = booking.userId?.coordinates;
-    const userLoc = booking.userId?.location;
-
-    let updated = booking;
-    if (booking.serviceType === 'home' && !booking.physioId) {
-      updated = await assignPhysioForBooking(booking, userCoords, userLoc);
-    }
-
     const userPhone = booking.userId?.phone;
-    if (updated?.status === 'assigned' && updated?.physioId) {
+    if (booking.physioId) {
       await sendSMS({
         to: userPhone,
         message:
@@ -159,7 +152,12 @@ export async function verifyPayment(req, res, next) {
       await sendSMS({
         to: userPhone,
         message:
-          'Payment received (held). We are confirming an available physiotherapist. You will be contacted soon.',
+          'Payment received (held). We are assigning a physiotherapist to your booking — you will be notified when confirmed.',
+      });
+      await sendWhatsApp({
+        to: userPhone,
+        message:
+          'Payment is held in escrow. Our team will assign a physiotherapist and notify you shortly.',
       });
     }
 
@@ -168,7 +166,7 @@ export async function verifyPayment(req, res, next) {
       .populate('physioId', 'name specialization location phone')
       .lean();
 
-    return res.json(responseBooking || updated || booking);
+    return res.json(responseBooking || booking);
   } catch (err) {
     next(err);
   }

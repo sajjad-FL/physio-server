@@ -49,12 +49,12 @@ export async function postOnlineCredit(booking) {
 }
 
 /**
- * Offline: credit gross + debit commission (two posted lines).
+ * Offline: record full cash collection + platform commission due.
  */
 export async function postOfflinePair(booking) {
   const physioId = booking.physioId;
   if (!physioId) return { created: false, reason: 'no_physio' };
-  const { gross, commission, physioEarning } = splitFromBooking(booking);
+  const { gross, commission } = splitFromBooking(booking);
   if (!Number.isFinite(gross) || gross <= 0) return { created: false, reason: 'no_gross' };
 
   const dup = await Transaction.findOne({
@@ -73,7 +73,7 @@ export async function postOfflinePair(booking) {
       type: 'offline',
       totalAmount: gross,
       commission,
-      physioEarning,
+      physioEarning: gross,
       direction: 'credit',
       status: POSTED,
       meta: { leg: 'gross' },

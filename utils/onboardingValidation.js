@@ -134,8 +134,9 @@ function hasUrl(s) {
 /**
  * Full physio document (lean) before submit.
  * @param {Record<string, unknown>} p
+ * @param {{ requireSignedNda?: boolean }} [opts]
  */
-export function validateSubmitReady(p) {
+export function validateSubmitReady(p, opts = {}) {
   const errors = {};
 
   const basic = {
@@ -176,6 +177,10 @@ export function validateSubmitReady(p) {
   if (!hasUrl(du.idProof)) errors.idProof = 'Upload ID proof';
   if (!hasUrl(du.registrationCertificate)) errors.registrationCertificate = 'Upload registration certificate';
   if (!hasUrl(du.selfieWithId)) errors.selfieWithId = 'Upload a selfie with your ID';
+
+  if (opts.requireSignedNda && !hasUrl(du.signedNda)) {
+    errors.signedNda = 'Download the NDA, sign it, and upload the signed copy';
+  }
 
   return { errors, ok: Object.keys(errors).length === 0 };
 }

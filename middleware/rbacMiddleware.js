@@ -1,14 +1,13 @@
 /**
- * Require at least one of the given roles.
- * Users with role `admin` may access all routes (hierarchy).
+ * Require a matching role. Users with role `admin` may access all routes (hierarchy).
  */
 export function requireRoles(...allowed) {
   return (req, res, next) => {
-    const roles = req.auth?.roles || [];
-    if (roles.includes('admin')) {
+    const role = req.auth?.role;
+    if (role === 'admin') {
       return next();
     }
-    const ok = allowed.some((r) => roles.includes(r));
+    const ok = allowed.includes(role);
     if (!ok) {
       return res.status(403).json({ message: 'Forbidden' });
     }

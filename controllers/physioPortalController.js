@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
+import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
+import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
+import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 
 function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
@@ -12,7 +16,10 @@ export async function getMe(req, res, next) {
   try {
     const physio = await Physiotherapist.findById(req.physio.id).lean();
     if (!physio) return res.status(404).json({ message: 'Not found' });
-    return res.json(physio);
+    return res.json({
+      ...physio,
+      platformApproved: isPhysioPlatformApproved(physio),
+    });
   } catch (err) {
     next(err);
   }
@@ -92,6 +99,87 @@ export async function patchAvailability(req, res, next) {
   }
 }
 
+export async function respondToAssignment(req, res, next) {
+  try {
+    const physioId = req.physio?.id;
+    const { id } = req.params;
+    const action = String(req.body?.action || '').toLowerCase();
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+    if (action !== 'accept' && action !== 'reject') {
+      return res.status(400).json({ message: 'action must be accept or reject' });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (booking.physioId?.toString() !== physioId) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    if (booking.status !== 'assigned') {
+      return res.status(400).json({ message: 'This booking is not awaiting your response' });
+    }
+
+    const userIdForNotify = booking.userId;
+
+    if (action === 'accept') {
+      booking.status = 'accepted';
+      booking.sessionStatus = 'scheduled';
+      await booking.save();
+
+      if (booking.paymentStatus === 'held') {
+        await creditPhysioWalletOnline(booking);
+      }
+
+      const user = await User.findById(userIdForNotify).select('phone name').lean();
+      const userPhone = user?.phone;
+      if (userPhone) {
+        await sendSMS({
+          to: userPhone,
+          message:
+            'Your physiotherapist has accepted your booking. Open your dashboard for visit details.',
+        });
+        await sendWhatsApp({
+          to: userPhone,
+          message:
+            'Good news — your physiotherapist accepted the booking. Check the app for details.',
+        });
+      }
+    } else {
+      await Booking.findByIdAndUpdate(id, {
+        physioId: null,
+        status: 'pending',
+        $unset: { sessionStatus: 1 },
+      });
+
+      const user = await User.findById(userIdForNotify).select('phone name').lean();
+      const userPhone = user?.phone;
+      if (userPhone) {
+        await sendSMS({
+          to: userPhone,
+          message:
+            'Your assigned physiotherapist was unavailable. We are re-assigning someone for your visit.',
+        });
+        await sendWhatsApp({
+          to: userPhone,
+          message:
+            'We could not confirm the previous assignment. Our team will assign another physiotherapist shortly.',
+        });
+      }
+    }
+
+    const out = await Booking.findById(id)
+      .populate('userId', 'name phone location coordinates')
+      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .lean();
+
+    return res.json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function patchLocation(req, res, next) {
   try {
     const lat = Number(req.body?.lat);
@@ -145,6 +233,16 @@ export async function completeSession(req, res, next) {
 
     if (booking.paymentStatus !== 'held') {
       return res.status(400).json({ message: 'Payment must be held in escrow to complete session' });
+    }
+
+    const canComplete =
+      booking.status === 'accepted' ||
+      booking.status === 'scheduled' ||
+      (booking.status === 'assigned' && booking.sessionStatus === 'scheduled');
+    if (!canComplete) {
+      return res.status(400).json({
+        message: 'Accept the assignment before marking this session complete',
+      });
     }
 
     booking.sessionStatus = 'completed';

@@ -17,6 +17,7 @@ import sessionNotesRoutes from './routes/sessionNotesRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
 import withdrawRoutes from './routes/withdrawRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
+import platformRoutes from './routes/platformRoutes.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -58,7 +59,11 @@ app.use(express.json());
 app.use('/uploads', express.static(uploadsRoot));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    /** If false, the running server is an old build that still required patient-selected physios. */
+    bookingCreateAdminAssignsPhysio: true,
+  });
 });
 
 app.use('/api/auth', authRoutes);
@@ -74,6 +79,7 @@ app.use('/api/disputes', disputeRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/withdraw', withdrawRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/platform', platformRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

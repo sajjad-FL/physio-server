@@ -45,7 +45,7 @@ export async function creditPhysioWalletOnline(booking) {
 }
 
 /**
- * Offline cash verified — ledger: credit gross + debit commission.
+ * Offline cash verified — ledger: gross collection + commission due.
  */
 export async function applyOfflineVerificationWallet(booking) {
   await postOfflinePair(booking);

@@ -19,6 +19,7 @@ import { authenticateJwt } from '../middleware/authenticateJwt.js';
 import { requireCompleteProfile } from '../middleware/requireCompleteProfile.js';
 import { requireRoles } from '../middleware/rbacMiddleware.js';
 import { attachPhysio } from '../middleware/physioMiddleware.js';
+import { requireApprovedPhysio } from '../middleware/requireApprovedPhysio.js';
 
 const router = Router();
 
@@ -40,17 +41,19 @@ router.patch('/:id', requireAdmin, updateBooking);
 router.patch(
   '/:id/create-plan',
   authenticateJwt,
-  requireCompleteProfile,
   requireRoles('physio'),
   attachPhysio,
+  requireApprovedPhysio,
+  requireCompleteProfile,
   createHomePlan
 );
 router.patch(
   '/:id/collect-payment',
   authenticateJwt,
-  requireCompleteProfile,
   requireRoles('physio'),
   attachPhysio,
+  requireApprovedPhysio,
+  requireCompleteProfile,
   collectOfflinePayment
 );
 router.patch('/:id/verify-payment', requireAdmin, verifyOfflinePayment);

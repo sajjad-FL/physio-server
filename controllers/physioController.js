@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { distanceKm } from '../utils/geo.js';
 import { isPhysioBookable, verificationBadgeLevel } from '../utils/physioVerification.js';
+import { validateIndianMobile } from '../utils/phoneIndia.js';
 
 function parseCoordQuery(q) {
   const lat = Number(q.lat);
@@ -12,7 +13,7 @@ function parseCoordQuery(q) {
 
 function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
-  const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
+  const limit = Math.min(100, Math.max(1, Number(query?.limit) || 10));
   return { page, limit, skip: (page - 1) * limit };
 }
 
@@ -32,11 +33,20 @@ export async function createPhysio(req, res, next) {
       }
     }
 
+    let phoneNorm = undefined;
+    if (phone != null && String(phone).trim() !== '') {
+      const pv = validateIndianMobile(phone);
+      if (!pv.valid) {
+        return res.status(400).json({ message: pv.message });
+      }
+      phoneNorm = pv.normalized;
+    }
+
     const physio = await Physiotherapist.create({
       name: name.trim(),
       specialization: specialization.trim(),
       location: location.trim(),
-      phone: phone?.trim() || undefined,
+      phone: phoneNorm,
       coordinates,
       availability:
         availability !== undefined
@@ -95,8 +105,15 @@ export async function getPublicPhysioProfile(req, res, next) {
 export async function listPhysios(req, res, next) {
   try {
     const { page, limit, skip } = readPagination(req.query);
+    const listSelect =
+      'name specialization experience pricePerSession location phone coordinates availability isAvailable isVerified verificationStatus status avatar avgRating totalReviews createdAt';
     const [list, total] = await Promise.all([
-      Physiotherapist.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Physiotherapist.find()
+        .select(listSelect)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Physiotherapist.countDocuments(),
     ]);
     return res.json({
@@ -110,6 +127,29 @@ export async function listPhysios(req, res, next) {
   }
 }
 
+const NEARBY_LEAN_SELECT =
+  'name specialization experience pricePerSession location coordinates availability isAvailable verificationStatus isVerified verification avatar avgRating totalReviews geoPoint';
+
+function toNearbyDto(p, distanceKmVal) {
+  return {
+    _id: p._id,
+    name: p.name,
+    phone: p.phone || '',
+    specialization: p.specialization,
+    experience: p.experience ?? 0,
+    pricePerSession: p.pricePerSession ?? 0,
+    location: p.location,
+    coordinates: p.coordinates || null,
+    distanceKm: distanceKmVal,
+    availability: p.availability !== false,
+    isAvailable: p.isAvailable !== false,
+    verificationBadgeLevel: verificationBadgeLevel(p),
+    avatar: p.avatar || '',
+    avgRating: Number(p.avgRating) || 0,
+    totalReviews: Number(p.totalReviews) || 0,
+  };
+}
+
 export async function listNearbyPhysios(req, res, next) {
   try {
     const coords = parseCoordQuery(req.query);
@@ -118,54 +158,83 @@ export async function listNearbyPhysios(req, res, next) {
     }
 
     const limit = Math.min(Number(req.query.limit) || 10, 50);
-
-    const physios = await Physiotherapist.find({
+    const baseFilter = {
       $or: [{ availability: true }, { isAvailable: true }],
       verificationStatus: 'approved',
       isVerified: true,
-    }).lean();
+    };
 
-    const bookable = physios.filter((p) => isPhysioBookable(p));
+    const byId = new Map();
 
-    const nearby = bookable
-      .filter((p) => p.coordinates?.lat != null && p.coordinates?.lng != null)
+    try {
+      const geoHits = await Physiotherapist.find({
+        ...baseFilter,
+        geoPoint: {
+          $nearSphere: {
+            $geometry: { type: 'Point', coordinates: [coords.lng, coords.lat] },
+            $maxDistance: 2_500_000,
+          },
+        },
+      })
+        .select(NEARBY_LEAN_SELECT)
+        .limit(Math.max(limit * 12, 48))
+        .lean();
+
+      for (const p of geoHits) {
+        byId.set(String(p._id), p);
+      }
+    } catch (geoErr) {
+      console.warn('[physios/nearby] geo query skipped:', geoErr?.message || geoErr);
+    }
+
+    if (byId.size < limit * 4) {
+      const legacyHits = await Physiotherapist.find({
+        ...baseFilter,
+        $or: [{ geoPoint: { $exists: false } }, { geoPoint: null }],
+        'coordinates.lat': { $exists: true, $ne: null },
+        'coordinates.lng': { $exists: true, $ne: null },
+      })
+        .select(NEARBY_LEAN_SELECT)
+        .limit(400)
+        .lean();
+
+      for (const p of legacyHits) {
+        if (!byId.has(String(p._id))) {
+          byId.set(String(p._id), p);
+        }
+      }
+    }
+
+    if (byId.size === 0) {
+      const capped = await Physiotherapist.find(baseFilter)
+        .select(NEARBY_LEAN_SELECT)
+        .limit(500)
+        .lean();
+      for (const p of capped) {
+        byId.set(String(p._id), p);
+      }
+    }
+
+    const merged = [...byId.values()];
+    const bookable = merged.filter((p) => isPhysioBookable(p));
+
+    const withCoords = bookable.filter(
+      (p) => p.coordinates?.lat != null && p.coordinates?.lng != null
+    );
+    const nearby = withCoords
       .map((p) => ({
-        _id: p._id,
-        name: p.name,
-        specialization: p.specialization,
-        experience: p.experience ?? 0,
-        pricePerSession: p.pricePerSession ?? 0,
-        location: p.location,
-        coordinates: p.coordinates,
-        distanceKm: distanceKm(coords.lat, coords.lng, p.coordinates.lat, p.coordinates.lng),
-        verificationBadgeLevel: verificationBadgeLevel(p),
-        avatar: p.avatar || '',
-        avgRating: Number(p.avgRating) || 0,
-        totalReviews: Number(p.totalReviews) || 0,
+        p,
+        d: distanceKm(coords.lat, coords.lng, p.coordinates.lat, p.coordinates.lng),
       }))
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, limit);
+      .sort((a, b) => a.d - b.d)
+      .slice(0, limit)
+      .map(({ p, d }) => toNearbyDto(p, d));
 
     if (nearby.length > 0) {
       return res.json({ physios: nearby, fallbackUsed: false });
     }
 
-    const fallback = bookable
-      .slice(0, limit)
-      .map((p) => ({
-        _id: p._id,
-        name: p.name,
-        specialization: p.specialization,
-        experience: p.experience ?? 0,
-        pricePerSession: p.pricePerSession ?? 0,
-        location: p.location,
-        coordinates: p.coordinates || null,
-        distanceKm: null,
-        verificationBadgeLevel: verificationBadgeLevel(p),
-        avatar: p.avatar || '',
-        avgRating: Number(p.avgRating) || 0,
-        totalReviews: Number(p.totalReviews) || 0,
-      }));
+    const fallback = bookable.slice(0, limit).map((p) => toNearbyDto(p, null));
 
     return res.json({
       physios: fallback,

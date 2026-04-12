@@ -39,8 +39,12 @@ export async function createWithdrawRequest(req, res, next) {
 
     const wallet = await getComputedWallet(physioId);
     if (amount > wallet.availableBalance + 1e-6) {
+      const hint =
+        wallet.commissionDue > 0.01
+          ? ` Net withdrawable is online balance (${formatInr(wallet.onlineAvailableBalance)}) minus commission due (${formatInr(wallet.commissionDue)}).`
+          : '';
       return res.status(400).json({
-        message: `Amount exceeds available balance (${formatInr(wallet.availableBalance)})`,
+        message: `Amount exceeds withdrawable balance (${formatInr(wallet.availableBalance)}).${hint}`,
       });
     }
 
@@ -109,7 +113,7 @@ export async function updateWithdrawStatus(req, res, next) {
     const wallet = await getComputedWallet(reqDoc.physioId);
     if (reqDoc.amount > wallet.availableBalance + 1e-6) {
       return res.status(400).json({
-        message: `Insufficient ledger balance to approve (${formatInr(wallet.availableBalance)} available)`,
+        message: `Insufficient net withdrawable balance to approve (${formatInr(wallet.availableBalance)} available after commission due)`,
       });
     }
 

@@ -20,7 +20,7 @@ export async function patchSessionNotes(req, res, next) {
       return res.status(400).json({ message: 'Invalid session id' });
     }
 
-    if (req.auth?.roles?.includes('admin')) {
+    if (req.auth?.role === 'admin') {
       return res.status(403).json({ message: 'Admins have read-only access to session notes' });
     }
 
