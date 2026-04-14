@@ -1,5 +1,6 @@
 import Physiotherapist from '../models/Physiotherapist.js';
 import PlatformSettings from '../models/PlatformSettings.js';
+import { resolveDeclarationText } from '../constants/qualificationDeclaration.js';
 import { isPhysioOnboardingLocked, isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import {
   validateBasicSection,
@@ -7,6 +8,7 @@ import {
   validatePracticeSection,
   validateSubmitReady,
 } from '../utils/onboardingValidation.js';
+import { isValidIdProofType } from '../constants/idProofTypes.js';
 
 function toAreas(val) {
   if (Array.isArray(val)) return val.map((s) => String(s).trim()).filter(Boolean);
@@ -39,15 +41,27 @@ function handleMongooseValidation(err, res) {
   return false;
 }
 
+function ndaPolicyFromPlatform(platformDoc) {
+  return {
+    requireSignedNda: false,
+    requireQualificationDeclaration: true,
+    declarationText: resolveDeclarationText(platformDoc || {}),
+    templateUrl: '',
+    originalName: '',
+  };
+}
+
 export async function getOnboarding(req, res, next) {
   try {
     const physio = await Physiotherapist.findById(req.physio.id).lean();
     if (!physio) return res.status(404).json({ message: 'Not found' });
     const onboardingLocked = isPhysioOnboardingLocked(physio);
+    const platform = await PlatformSettings.findById('singleton').lean();
     return res.json({
       ...physio,
       onboardingLocked,
       platformApproved: isPhysioPlatformApproved(physio),
+      ndaPolicy: ndaPolicyFromPlatform(platform || {}),
     });
   } catch (err) {
     next(err);
@@ -65,7 +79,8 @@ export async function patchOnboarding(req, res, next) {
       });
     }
 
-    const { step, basic, qualification, practice } = req.body || {};
+    const { step, basic, qualification, practice, qualificationDeclarationAccepted, idProofType } =
+      req.body || {};
 
     if (basic !== undefined) {
       if (!basic || typeof basic !== 'object' || Array.isArray(basic)) {
@@ -98,6 +113,20 @@ export async function patchOnboarding(req, res, next) {
     }
 
     const $set = {};
+
+    if (qualificationDeclarationAccepted === true && !existingPatch.qualificationDeclarationAcceptedAt) {
+      $set.qualificationDeclarationAcceptedAt = new Date();
+    }
+
+    if (idProofType !== undefined) {
+      const t = String(idProofType).trim().toLowerCase();
+      if (!isValidIdProofType(t)) {
+        return sendValidationError(res, 'Please fix the fields below', {
+          idProofType: 'Select Aadhaar, PAN, Passport, or Voter ID',
+        });
+      }
+      $set['documentUrls.idProofType'] = t;
+    }
 
     if (step !== undefined) {
       const s = Number(step);
@@ -145,9 +174,25 @@ export async function patchOnboarding(req, res, next) {
       }
       const areas = toAreas(practice.areas);
       if (areas.length) $set.serviceAreas = areas;
-      if (practice.fees != null && practice.fees !== '') {
-        const fee = Number(practice.fees);
-        if (Number.isFinite(fee) && fee > 0) $set.pricePerSession = fee;
+
+      const minRaw = practice.feeMin !== undefined ? practice.feeMin : practice.fees;
+      if (minRaw != null && String(minRaw).trim() !== '') {
+        const min = Number(minRaw);
+        if (Number.isFinite(min) && min > 0) $set.pricePerSession = min;
+      }
+      if (practice.feeMax !== undefined) {
+        const maxStr = practice.feeMax == null ? '' : String(practice.feeMax).trim();
+        const baseMin = Number.isFinite(Number(minRaw)) && Number(minRaw) > 0 ? Number(minRaw) : Number(existingPatch.pricePerSession);
+        if (maxStr === '') {
+          $set.pricePerSessionMax = null;
+        } else {
+          const max = Number(maxStr);
+          if (Number.isFinite(max) && Number.isFinite(baseMin) && max > baseMin) {
+            $set.pricePerSessionMax = max;
+          } else {
+            $set.pricePerSessionMax = null;
+          }
+        }
       }
     }
 
@@ -164,7 +209,11 @@ export async function patchOnboarding(req, res, next) {
     }
 
     if (!physio) return res.status(404).json({ message: 'Not found' });
-    return res.json(physio);
+    const platform = await PlatformSettings.findById('singleton').lean();
+    return res.json({
+      ...physio,
+      ndaPolicy: ndaPolicyFromPlatform(platform || {}),
+    });
   } catch (err) {
     next(err);
   }
@@ -182,9 +231,7 @@ export async function submitOnboarding(req, res, next) {
       });
     }
 
-    const ndaDoc = await PlatformSettings.findById('singleton').lean();
-    const requireSignedNda = Boolean(String(ndaDoc?.physioNdaTemplateUrl || '').trim());
-    const { ok, errors } = validateSubmitReady(existing, { requireSignedNda });
+    const { ok, errors } = validateSubmitReady(existing, { requireQualificationDeclaration: true });
     if (!ok) {
       return sendValidationError(
         res,

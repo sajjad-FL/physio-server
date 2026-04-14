@@ -65,7 +65,8 @@ router.post(
     { name: 'id_proof', maxCount: 1 },
     { name: 'registrationCertificate', maxCount: 1 },
     { name: 'selfieWithId', maxCount: 1 },
-    { name: 'signedNda', maxCount: 1 },
+    { name: 'internshipCertificate', maxCount: 1 },
+    { name: 'councilRegistrationCertificate', maxCount: 1 },
   ]),
   saveOnboardingFiles
 );

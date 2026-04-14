@@ -31,8 +31,12 @@ const qualificationSchema = new mongoose.Schema(
 const documentUrlsSchema = new mongoose.Schema(
   {
     idProof: { type: String, trim: true, default: '' },
+    /** One of: aadhaar | pan | passport | voter_id */
+    idProofType: { type: String, trim: true, default: '' },
     registrationCertificate: { type: String, trim: true, default: '' },
     selfieWithId: { type: String, trim: true, default: '' },
+    internshipCertificate: { type: String, trim: true, default: '' },
+    councilRegistrationCertificate: { type: String, trim: true, default: '' },
     /** Signed copy of platform NDA (required when admin has uploaded a template). */
     signedNda: { type: String, trim: true, default: '' },
   },
@@ -91,6 +95,8 @@ const physiotherapistSchema = new mongoose.Schema(
     specialization: { type: String, required: true, trim: true },
     experience: { type: Number, min: 0, default: 0 },
     pricePerSession: { type: Number, min: 0, default: 500 },
+    /** Upper bound when listing a fee range; omit or null for a single fixed fee. */
+    pricePerSessionMax: { type: Number, min: 0, default: null },
     location: { type: String, required: true, trim: true },
     phone: { type: String, trim: true, unique: true, sparse: true },
     coordinates: { type: coordinatesSchema, default: null },
@@ -117,6 +123,8 @@ const physiotherapistSchema = new mongoose.Schema(
       default: 'pending',
     },
     verificationNote: { type: String, trim: true, default: '' },
+    /** Set when physio accepts the platform qualification declaration (registration or onboarding). */
+    qualificationDeclarationAcceptedAt: { type: Date, default: null },
     avgRating: { type: Number, default: 0, min: 0, max: 5 },
     totalReviews: { type: Number, default: 0, min: 0 },
   },
@@ -154,5 +162,10 @@ physiotherapistSchema.pre('save', function syncGeoPoint(next) {
 });
 
 physiotherapistSchema.index({ geoPoint: '2dsphere' }, { sparse: true });
+
+physiotherapistSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: 'string', $gt: '' } } }
+);
 
 export default mongoose.model('Physiotherapist', physiotherapistSchema);

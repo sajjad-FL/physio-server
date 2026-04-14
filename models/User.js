@@ -59,4 +59,10 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/** Non-empty emails only (phone-only accounts may omit or use empty). */
+userSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: 'string', $gt: '' } } }
+);
+
 export default mongoose.model('User', userSchema);

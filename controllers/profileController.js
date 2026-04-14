@@ -139,17 +139,20 @@ export async function getProfile(req, res, next) {
     if (role === 'physio' && isValidPhysioObjectId(user.physioId)) {
       const physio = await Physiotherapist.findById(user.physioId)
         .select(
-          'specialization experience pricePerSession avatar verificationStatus isVerified verification verificationNote'
+          'specialization experience pricePerSession pricePerSessionMax avatar verificationStatus isVerified verification verificationNote'
         )
         .lean();
       if (physio) {
         if (user.avatarUrl && !physio.avatar) {
           await Physiotherapist.findByIdAndUpdate(user.physioId, { $set: { avatar: user.avatarUrl } });
         }
+        const lo = Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0;
+        const hi = physio.pricePerSessionMax != null ? Number(physio.pricePerSessionMax) : NaN;
         physioProfile = {
           specialization: physio.specialization || '',
           experience: Number.isFinite(physio.experience) ? physio.experience : 0,
-          fees: Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0,
+          fees: lo,
+          feesMax: Number.isFinite(hi) && hi > lo ? hi : null,
         };
         physioVerification = {
           status: physio.verificationStatus || 'pending',
@@ -190,6 +193,7 @@ export async function patchProfile(req, res, next) {
     const specializationRaw = req.body?.specialization;
     const experienceRaw = req.body?.experience;
     const feesRaw = req.body?.fees ?? req.body?.pricePerSession;
+    const feesMaxRaw = req.body?.feesMax ?? req.body?.pricePerSessionMax;
 
     if (!name) {
       return res.status(400).json({ message: 'Name is required' });
@@ -271,13 +275,33 @@ export async function patchProfile(req, res, next) {
             }
             physio.pricePerSession = fees;
           }
+
+          if (feesMaxRaw !== undefined) {
+            if (feesMaxRaw === null || feesMaxRaw === '') {
+              physio.pricePerSessionMax = null;
+            } else {
+              const fm = Number(feesMaxRaw);
+              if (!Number.isFinite(fm) || fm < 0) {
+                return res.status(400).json({ message: 'Upper fee must be a valid non-negative amount' });
+              }
+              const lo = Number(physio.pricePerSession);
+              if (Number.isFinite(fm) && Number.isFinite(lo) && fm > lo) {
+                physio.pricePerSessionMax = fm;
+              } else {
+                physio.pricePerSessionMax = null;
+              }
+            }
+          }
         }
 
         await physio.save();
+        const loOut = Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0;
+        const hiOut = physio.pricePerSessionMax != null ? Number(physio.pricePerSessionMax) : NaN;
         physioResponse = {
           specialization: physio.specialization || '',
           experience: Number.isFinite(physio.experience) ? physio.experience : 0,
-          fees: Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0,
+          fees: loOut,
+          feesMax: Number.isFinite(hiOut) && hiOut > loOut ? hiOut : null,
         };
       }
     }

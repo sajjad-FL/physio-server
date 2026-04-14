@@ -24,8 +24,7 @@ import {
   listPhysiosWalletTable,
 } from '../controllers/paymentAnalyticsController.js';
 import { listOfflinePaymentsQueue } from '../controllers/adminPaymentsController.js';
-import { uploadOnboardingFiles } from '../config/upload.js';
-import { getAdminPlatformSettings, uploadPhysioNdaTemplate } from '../controllers/platformSettingsController.js';
+import { getAdminPlatformSettings, patchAdminPlatformSettings, uploadPhysioNdaTemplate } from '../controllers/platformSettingsController.js';
 
 const router = Router();
 
@@ -51,11 +50,7 @@ router.get('/payments/summary', requireAdmin, getPaymentSummary);
 router.get('/payments/physios', requireAdmin, listPhysiosWalletTable);
 router.post('/payments/settle-commission', requireAdmin, postSettleCommission);
 router.get('/platform/settings', requireAdmin, getAdminPlatformSettings);
-router.post(
-  '/platform/physio-nda',
-  requireAdmin,
-  uploadOnboardingFiles.single('ndaTemplate'),
-  uploadPhysioNdaTemplate
-);
+router.patch('/platform/settings', requireAdmin, patchAdminPlatformSettings);
+router.post('/platform/physio-nda', requireAdmin, uploadPhysioNdaTemplate);
 
 export default router;

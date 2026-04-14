@@ -405,7 +405,8 @@ export async function patchAdminPhysio(req, res, next) {
       return res.status(400).json({ message: 'Invalid physiotherapist id' });
     }
 
-    const { name, experience, pricePerSession, specialization, isAvailable, availability } = req.body || {};
+    const { name, experience, pricePerSession, pricePerSessionMax, specialization, isAvailable, availability } =
+      req.body || {};
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) updates.name = name.trim();
@@ -425,6 +426,23 @@ export async function patchAdminPhysio(req, res, next) {
         return res.status(400).json({ message: 'pricePerSession must be a non-negative number' });
       }
       updates.pricePerSession = value;
+    }
+    if (pricePerSessionMax !== undefined) {
+      if (pricePerSessionMax === null || pricePerSessionMax === '') {
+        updates.pricePerSessionMax = null;
+      } else {
+        const hi = Number(pricePerSessionMax);
+        if (!Number.isFinite(hi) || hi < 0) {
+          return res.status(400).json({ message: 'pricePerSessionMax must be a non-negative number or empty' });
+        }
+        const existing = await Physiotherapist.findById(id).select('pricePerSession').lean();
+        const lo = updates.pricePerSession ?? Number(existing?.pricePerSession);
+        if (Number.isFinite(hi) && Number.isFinite(lo) && hi > lo) {
+          updates.pricePerSessionMax = hi;
+        } else {
+          updates.pricePerSessionMax = null;
+        }
+      }
     }
     if (typeof isAvailable === 'boolean') {
       updates.isAvailable = isAvailable;

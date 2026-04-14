@@ -1,6 +1,7 @@
 import Physiotherapist from '../models/Physiotherapist.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
 import { isPhysioOnboardingLocked } from '../utils/physioVerification.js';
+import { isValidIdProofType } from '../constants/idProofTypes.js';
 
 async function persistFile(file, physioId, subpath) {
   if (file.buffer) {
@@ -83,10 +84,33 @@ export async function uploadOnboardingFiles(req, res, next) {
     const idProof = f.idProof?.[0] || f.id_proof?.[0];
     const registrationCertificate = f.registrationCertificate?.[0];
     const selfieWithId = f.selfieWithId?.[0];
-    const signedNda = f.signedNda?.[0];
+    const internshipCertificate = f.internshipCertificate?.[0];
+    const councilRegistrationCertificate = f.councilRegistrationCertificate?.[0];
 
-    if (!avatar && !certificate && !idProof && !registrationCertificate && !selfieWithId && !signedNda) {
-      return res.status(400).json({ message: 'Provide at least one file' });
+    const idProofTypeRaw = req.body?.idProofType;
+    const idProofType =
+      idProofTypeRaw !== undefined && idProofTypeRaw !== null && String(idProofTypeRaw).trim() !== ''
+        ? String(idProofTypeRaw).trim().toLowerCase()
+        : null;
+
+    if (
+      !avatar &&
+      !certificate &&
+      !idProof &&
+      !registrationCertificate &&
+      !selfieWithId &&
+      !internshipCertificate &&
+      !councilRegistrationCertificate &&
+      idProofType === null
+    ) {
+      return res.status(400).json({ message: 'Provide at least one file or idProofType' });
+    }
+
+    if (idProofType !== null && !isValidIdProofType(idProofType)) {
+      return res.status(400).json({
+        message: 'Invalid idProofType',
+        errors: { idProofType: 'Select Aadhaar, PAN, Passport, or Voter ID' },
+      });
     }
 
     const $set = { ...pendingVerificationUpdate() };
@@ -117,10 +141,18 @@ export async function uploadOnboardingFiles(req, res, next) {
       $set['documentUrls.selfieWithId'] = url;
       newDocs.push({ type: 'selfie_with_id', url, uploadedAt: new Date() });
     }
-    if (signedNda) {
-      const url = await persistFile(signedNda, physioId, 'signed_nda');
-      $set['documentUrls.signedNda'] = url;
-      newDocs.push({ type: 'signed_nda', url, uploadedAt: new Date() });
+    if (internshipCertificate) {
+      const url = await persistFile(internshipCertificate, physioId, 'internship');
+      $set['documentUrls.internshipCertificate'] = url;
+      newDocs.push({ type: 'internship_certificate', url, uploadedAt: new Date() });
+    }
+    if (councilRegistrationCertificate) {
+      const url = await persistFile(councilRegistrationCertificate, physioId, 'council_registration');
+      $set['documentUrls.councilRegistrationCertificate'] = url;
+      newDocs.push({ type: 'council_registration_certificate', url, uploadedAt: new Date() });
+    }
+    if (idProofType !== null) {
+      $set['documentUrls.idProofType'] = idProofType;
     }
 
     const update = { $set };

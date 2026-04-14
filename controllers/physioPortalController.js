@@ -35,7 +35,7 @@ export async function getPhysioBookingById(req, res, next) {
 
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
@@ -60,7 +60,7 @@ export async function listMyBookings(req, res, next) {
     const [list, total] = await Promise.all([
       Booking.find(query)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .sort({ date: 1, timeSlot: 1 })
       .skip(skip)
       .limit(limit)
@@ -171,7 +171,7 @@ export async function respondToAssignment(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
     return res.json(out);

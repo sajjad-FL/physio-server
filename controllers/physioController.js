@@ -90,7 +90,7 @@ export async function getPublicPhysioProfile(req, res, next) {
       isVerified: true,
     })
       .select(
-        'name specialization experience pricePerSession location serviceType avatar avgRating totalReviews coordinates phone'
+        'name specialization experience pricePerSession pricePerSessionMax location serviceType avatar avgRating totalReviews coordinates phone'
       )
       .lean();
     if (!physio) {
@@ -106,7 +106,7 @@ export async function listPhysios(req, res, next) {
   try {
     const { page, limit, skip } = readPagination(req.query);
     const listSelect =
-      'name specialization experience pricePerSession location phone coordinates availability isAvailable isVerified verificationStatus status avatar avgRating totalReviews createdAt';
+      'name specialization experience pricePerSession pricePerSessionMax location phone coordinates availability isAvailable isVerified verificationStatus status avatar avgRating totalReviews createdAt';
     const [list, total] = await Promise.all([
       Physiotherapist.find()
         .select(listSelect)
@@ -128,7 +128,7 @@ export async function listPhysios(req, res, next) {
 }
 
 const NEARBY_LEAN_SELECT =
-  'name specialization experience pricePerSession location coordinates availability isAvailable verificationStatus isVerified verification avatar avgRating totalReviews geoPoint';
+  'name specialization experience pricePerSession pricePerSessionMax location coordinates availability isAvailable verificationStatus isVerified verification avatar avgRating totalReviews geoPoint';
 
 function toNearbyDto(p, distanceKmVal) {
   return {
@@ -138,6 +138,10 @@ function toNearbyDto(p, distanceKmVal) {
     specialization: p.specialization,
     experience: p.experience ?? 0,
     pricePerSession: p.pricePerSession ?? 0,
+    pricePerSessionMax:
+      p.pricePerSessionMax != null && Number(p.pricePerSessionMax) > Number(p.pricePerSession ?? 0)
+        ? p.pricePerSessionMax
+        : null,
     location: p.location,
     coordinates: p.coordinates || null,
     distanceKm: distanceKmVal,

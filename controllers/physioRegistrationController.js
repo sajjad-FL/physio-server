@@ -1,7 +1,6 @@
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
-import PlatformSettings from '../models/PlatformSettings.js';
 import { persistPhysioUploadFile } from '../utils/physioFilePersist.js';
 import {
   validateBasicSection,
@@ -9,6 +8,7 @@ import {
   validatePracticeSection,
 } from '../utils/onboardingValidation.js';
 import { validateIndianMobile } from '../utils/phoneIndia.js';
+import { isValidIdProofType } from '../constants/idProofTypes.js';
 
 function normalizeEmail(s) {
   return String(s || '')
@@ -33,9 +33,12 @@ function parseDob(input) {
   return d;
 }
 
-function collectValidationErrors(body, files, opts = {}) {
+function truthyQualificationDeclaration(v) {
+  return v === true || v === 'true' || v === 'on' || v === '1';
+}
+
+function collectValidationErrors(body, files) {
   const errors = {};
-  const requireSignedNda = Boolean(opts.requireSignedNda);
 
   const name = String(body.name || '').trim();
   const email = normalizeEmail(body.email);
@@ -92,7 +95,8 @@ function collectValidationErrors(body, files, opts = {}) {
       specialization: body.specialization,
       serviceType: body.serviceType,
       areas: body.areas,
-      fees: body.fees,
+      feeMin: body.feeMin ?? body.fees,
+      feeMax: body.feeMax,
     }).errors
   );
 
@@ -100,14 +104,19 @@ function collectValidationErrors(body, files, opts = {}) {
   const idProof = files?.idProof?.[0] || files?.id_proof?.[0];
   const registrationCertificate = files?.registrationCertificate?.[0];
   const selfieWithId = files?.selfieWithId?.[0];
-  const signedNda = files?.signedNda?.[0];
+  const internshipCertificate = files?.internshipCertificate?.[0];
+  const councilRegistrationCertificate = files?.councilRegistrationCertificate?.[0];
+  const idProofType = String(body.idProofType || '').trim().toLowerCase();
 
   if (!certificate) errors.certificate = 'Qualification certificate is required';
   if (!idProof) errors.idProof = 'ID proof is required';
   if (!registrationCertificate) errors.registrationCertificate = 'Registration certificate is required';
   if (!selfieWithId) errors.selfieWithId = 'Selfie with ID is required';
-  if (requireSignedNda && !signedNda) {
-    errors.signedNda = 'Download the NDA, sign it, and upload the signed copy';
+  if (!isValidIdProofType(idProofType)) {
+    errors.idProofType = 'Select ID type (Aadhaar, PAN, Passport, or Voter ID)';
+  }
+  if (!truthyQualificationDeclaration(body.qualificationDeclaration)) {
+    errors.qualificationDeclaration = 'You must agree to the qualification declaration';
   }
 
   return {
@@ -121,7 +130,9 @@ function collectValidationErrors(body, files, opts = {}) {
     idProof,
     registrationCertificate,
     selfieWithId,
-    signedNda,
+    internshipCertificate,
+    councilRegistrationCertificate,
+    idProofType,
     avatar: files?.avatar?.[0],
   };
 }
@@ -148,7 +159,9 @@ export async function registerPhysio(req, res, next) {
       idProof,
       registrationCertificate,
       selfieWithId,
-      signedNda,
+      internshipCertificate,
+      councilRegistrationCertificate,
+      idProofType,
       avatar,
     } = parsed;
 
@@ -156,19 +169,31 @@ export async function registerPhysio(req, res, next) {
       return res.status(400).json({ message: 'Valid email is required' });
     }
 
-    const emailTaken = await User.findOne({ email }).lean();
-    if (emailTaken) {
-      return res.status(409).json({ message: 'An account with this email already exists' });
+    const [emailTakenUser, emailTakenPhysio] = await Promise.all([
+      User.findOne({ email }).lean(),
+      Physiotherapist.findOne({ email }).lean(),
+    ]);
+    if (emailTakenUser || emailTakenPhysio) {
+      return res.status(409).json({
+        message: 'This email is already registered',
+        errors: { email: 'This email is already in use. Choose another or sign in.' },
+      });
     }
 
     const phoneTaken = await User.findOne({ phone }).lean();
     if (phoneTaken) {
-      return res.status(409).json({ message: 'An account with this phone already exists' });
+      return res.status(409).json({
+        message: 'This phone is already registered',
+        errors: { phone: 'This phone is already in use. Choose another or sign in.' },
+      });
     }
 
     const phoneTakenPhysio = await Physiotherapist.findOne({ phone }).lean();
     if (phoneTakenPhysio) {
-      return res.status(409).json({ message: 'This phone is already registered as a physiotherapist' });
+      return res.status(409).json({
+        message: 'This phone is already registered as a physiotherapist',
+        errors: { phone: 'This phone is already in use. Choose another or sign in.' },
+      });
     }
 
     const dob = parseDob(body.dob);
@@ -184,7 +209,14 @@ export async function registerPhysio(req, res, next) {
       ? String(body.serviceType).trim()
       : 'both';
     const serviceAreas = toAreas(body.areas);
-    const pricePerSession = Number(body.fees);
+    const minFee = Number(body.feeMin ?? body.fees);
+    const maxFeeRaw = body.feeMax != null ? String(body.feeMax).trim() : '';
+    const maxFeeNum = maxFeeRaw === '' ? NaN : Number(maxFeeRaw);
+    const pricePerSession = Number.isFinite(minFee) ? minFee : 0;
+    let pricePerSessionMax = null;
+    if (Number.isFinite(maxFeeNum) && maxFeeNum > pricePerSession) {
+      pricePerSessionMax = maxFeeNum;
+    }
 
     const covLat = Number(body.lat);
     const covLng = Number(body.lng);
@@ -200,41 +232,64 @@ export async function registerPhysio(req, res, next) {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    let physio = await Physiotherapist.create({
-      name,
-      email,
-      phone,
-      dob,
-      gender: gender || '',
-      address,
-      location,
-      coordinates,
-      specialization,
-      experience,
-      serviceType,
-      serviceAreas,
-      pricePerSession,
-      qualification: {
-        degree,
-        university,
-        year: Number.isFinite(year) ? year : null,
-        registrationNumber,
-        certificateUrl: '',
-      },
-      documentUrls: {
-        idProof: '',
-        registrationCertificate: '',
-        selfieWithId: '',
-        signedNda: '',
-      },
-      avatar: '',
-      verificationStatus: 'pending',
-      status: 'pending',
-      isVerified: false,
-      verification: { status: 'pending', level: 'not_verified', rejectionReason: '' },
-      documents: [],
-      onboarding: { currentStep: 5, submittedAt: null },
-    });
+    let physio;
+    try {
+      physio = await Physiotherapist.create({
+        name,
+        email,
+        phone,
+        dob,
+        gender: gender || '',
+        address,
+        location,
+        coordinates,
+        specialization,
+        experience,
+        serviceType,
+        serviceAreas,
+        pricePerSession,
+        pricePerSessionMax,
+        qualification: {
+          degree,
+          university,
+          year: Number.isFinite(year) ? year : null,
+          registrationNumber,
+          certificateUrl: '',
+        },
+        documentUrls: {
+          idProof: '',
+          idProofType: '',
+          registrationCertificate: '',
+          selfieWithId: '',
+          internshipCertificate: '',
+          councilRegistrationCertificate: '',
+          signedNda: '',
+        },
+        avatar: '',
+        qualificationDeclarationAcceptedAt: new Date(),
+        verificationStatus: 'pending',
+        status: 'pending',
+        isVerified: false,
+        verification: { status: 'pending', level: 'not_verified', rejectionReason: '' },
+        documents: [],
+        onboarding: { currentStep: 5, submittedAt: null },
+      });
+    } catch (createErr) {
+      if (createErr?.code === 11000) {
+        const key = Object.keys(createErr.keyPattern || createErr.keyValue || {})[0];
+        if (key === 'email') {
+          return res.status(409).json({
+            message: 'This email is already registered',
+            errors: { email: 'This email is already in use. Choose another or sign in.' },
+          });
+        }
+        return res.status(409).json({
+          message: 'Duplicate registration',
+          errors: { phone: 'This phone may already be registered.' },
+        });
+      }
+      throw createErr;
+    }
 
     const docs = [];
     const $set = {};
@@ -254,6 +309,7 @@ export async function registerPhysio(req, res, next) {
 
       const idUrl = await persistPhysioUploadFile(idProof, pid, 'id_proof');
       $set['documentUrls.idProof'] = idUrl;
+      $set['documentUrls.idProofType'] = idProofType;
       docs.push({ type: 'id_proof', url: idUrl, uploadedAt: new Date() });
 
       const regUrl = await persistPhysioUploadFile(registrationCertificate, pid, 'registration');
@@ -264,10 +320,15 @@ export async function registerPhysio(req, res, next) {
       $set['documentUrls.selfieWithId'] = selfieUrl;
       docs.push({ type: 'selfie_with_id', url: selfieUrl, uploadedAt: new Date() });
 
-      if (requireSignedNda && signedNda) {
-        const ndaSignedUrl = await persistPhysioUploadFile(signedNda, pid, 'signed_nda');
-        $set['documentUrls.signedNda'] = ndaSignedUrl;
-        docs.push({ type: 'signed_nda', url: ndaSignedUrl, uploadedAt: new Date() });
+      if (internshipCertificate) {
+        const u = await persistPhysioUploadFile(internshipCertificate, pid, 'internship');
+        $set['documentUrls.internshipCertificate'] = u;
+        docs.push({ type: 'internship_certificate', url: u, uploadedAt: new Date() });
+      }
+      if (councilRegistrationCertificate) {
+        const u = await persistPhysioUploadFile(councilRegistrationCertificate, pid, 'council_registration');
+        $set['documentUrls.councilRegistrationCertificate'] = u;
+        docs.push({ type: 'council_registration_certificate', url: u, uploadedAt: new Date() });
       }
 
       physio = await Physiotherapist.findByIdAndUpdate(
@@ -314,7 +375,17 @@ export async function registerPhysio(req, res, next) {
     } catch (err) {
       await Physiotherapist.findByIdAndDelete(physio._id);
       if (err?.code === 11000) {
-        return res.status(409).json({ message: 'Email or phone already registered' });
+        const dupKey = Object.keys(err.keyPattern || err.keyValue || {})[0];
+        if (dupKey === 'email') {
+          return res.status(409).json({
+            message: 'This email is already registered',
+            errors: { email: 'This email is already in use. Choose another or sign in.' },
+          });
+        }
+        return res.status(409).json({
+          message: 'This phone is already registered',
+          errors: { phone: 'This phone is already in use. Choose another or sign in.' },
+        });
       }
       throw err;
     }

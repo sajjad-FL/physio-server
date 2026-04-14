@@ -1,3 +1,6 @@
+import { isPhysioDegreeOption } from '../constants/physioQualification.js';
+import { isValidIdProofType } from '../constants/idProofTypes.js';
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function validateEmailOptional(email) {
@@ -61,7 +64,7 @@ export function validateQualificationSection(qualification) {
   const errors = {};
   const degree = String(qualification?.degree ?? '').trim();
   if (!degree) errors.degree = 'Degree is required';
-  else if (degree.length > 200) errors.degree = 'Degree is too long';
+  else if (!isPhysioDegreeOption(degree)) errors.degree = 'Select BPT or MPT';
 
   const university = String(qualification?.university ?? '').trim();
   if (!university) errors.university = 'University is required';
@@ -70,16 +73,17 @@ export function validateQualificationSection(qualification) {
   if (qualification?.year != null && qualification.year !== '') {
     const y = Number(qualification.year);
     const current = new Date().getFullYear();
-    if (!Number.isFinite(y)) errors.year = 'Enter a valid graduation year';
-    else if (y < 1950 || y > current + 1) errors.year = `Year must be between 1950 and ${current + 1}`;
+    if (!Number.isFinite(y)) errors.year = 'Enter a valid passing year';
+    else if (y < 1950 || y > current + 1) errors.year = `Passing year must be between 1950 and ${current + 1}`;
   } else {
-    errors.year = 'Graduation year is required';
+    errors.year = 'Passing year is required';
   }
 
   const reg = String(qualification?.registrationNumber ?? '').trim();
-  if (!reg) errors.registrationNumber = 'Registration number is required';
-  else if (reg.length < 3) errors.registrationNumber = 'Registration number is too short';
-  else if (reg.length > 80) errors.registrationNumber = 'Registration number is too long';
+  if (reg) {
+    if (reg.length < 3) errors.registrationNumber = 'Council registration number is too short';
+    else if (reg.length > 80) errors.registrationNumber = 'Council registration number is too long';
+  }
 
   return { errors };
 }
@@ -116,12 +120,34 @@ export function validatePracticeSection(practice) {
         : [];
   if (areaList.length === 0) errors.areas = 'Add at least one service area';
 
-  if (practice?.fees == null || practice.fees === '') {
-    errors.fees = 'Fee per session is required';
+  const MAX_FEE = 500000;
+  const minStr =
+    practice?.feeMin !== undefined && practice?.feeMin !== null && String(practice.feeMin).trim() !== ''
+      ? String(practice.feeMin).trim()
+      : String(practice?.fees ?? '').trim();
+  const maxStr =
+    practice?.feeMax !== undefined && practice?.feeMax !== null ? String(practice.feeMax).trim() : '';
+
+  if (!minStr) {
+    errors.feeMin = 'Minimum fee per session is required';
   } else {
-    const fee = Number(practice.fees);
-    if (!Number.isFinite(fee) || fee <= 0) errors.fees = 'Enter a valid fee greater than zero (₹)';
-    else if (fee > 500000) errors.fees = 'Fee seems unreasonably high — please check';
+    const min = Number(minStr);
+    if (!Number.isFinite(min) || min <= 0) {
+      errors.feeMin = 'Enter a valid minimum fee greater than zero (₹)';
+    } else if (min > MAX_FEE) {
+      errors.feeMin = 'Fee seems unreasonably high — please check';
+    }
+    if (maxStr !== '') {
+      const min = Number(minStr);
+      const max = Number(maxStr);
+      if (!Number.isFinite(max) || max <= 0) {
+        errors.feeMax = 'Enter a valid maximum fee (₹)';
+      } else if (max > MAX_FEE) {
+        errors.feeMax = 'Fee seems unreasonably high — please check';
+      } else if (Number.isFinite(min) && max < min) {
+        errors.feeMax = 'Maximum must be greater than or equal to minimum';
+      }
+    }
   }
 
   return { errors };
@@ -134,7 +160,7 @@ function hasUrl(s) {
 /**
  * Full physio document (lean) before submit.
  * @param {Record<string, unknown>} p
- * @param {{ requireSignedNda?: boolean }} [opts]
+ * @param {{ requireSignedNda?: boolean, requireQualificationDeclaration?: boolean }} [opts]
  */
 export function validateSubmitReady(p, opts = {}) {
   const errors = {};
@@ -160,6 +186,12 @@ export function validateSubmitReady(p, opts = {}) {
     }).errors
   );
 
+  const lo = Number(p.pricePerSession);
+  const hiRaw = p.pricePerSessionMax;
+  const hi = hiRaw != null && hiRaw !== '' ? Number(hiRaw) : NaN;
+  const feeMaxForValidate =
+    Number.isFinite(lo) && Number.isFinite(hi) && hi > lo ? String(hi) : '';
+
   Object.assign(
     errors,
     validatePracticeSection({
@@ -167,7 +199,8 @@ export function validateSubmitReady(p, opts = {}) {
       specialization: p.specialization,
       serviceType: p.serviceType,
       areas: (p.serviceAreas || []).join(', '),
-      fees: p.pricePerSession,
+      feeMin: Number.isFinite(lo) && lo > 0 ? String(lo) : '',
+      feeMax: feeMaxForValidate,
     }).errors
   );
 
@@ -178,8 +211,20 @@ export function validateSubmitReady(p, opts = {}) {
   if (!hasUrl(du.registrationCertificate)) errors.registrationCertificate = 'Upload registration certificate';
   if (!hasUrl(du.selfieWithId)) errors.selfieWithId = 'Upload a selfie with your ID';
 
+  if (!isValidIdProofType(du.idProofType)) {
+    errors.idProofType = 'Select the type of ID you uploaded (Aadhaar, PAN, Passport, or Voter ID)';
+  }
+
   if (opts.requireSignedNda && !hasUrl(du.signedNda)) {
     errors.signedNda = 'Download the NDA, sign it, and upload the signed copy';
+  }
+
+  if (opts.requireQualificationDeclaration) {
+    const acceptedAt = p.qualificationDeclarationAcceptedAt;
+    const legacyNda = hasUrl(du.signedNda);
+    if (!acceptedAt && !legacyNda) {
+      errors.qualificationDeclaration = 'Confirm the qualification declaration to continue';
+    }
   }
 
   return { errors, ok: Object.keys(errors).length === 0 };

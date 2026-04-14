@@ -254,7 +254,7 @@ export async function listMyBookings(req, res, next) {
     const [list, total] = await Promise.all([
       Booking.find({ userId })
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .sort({ date: -1, timeSlot: -1 })
       .skip(skip)
       .limit(limit)
@@ -282,7 +282,7 @@ export async function getAdminBookingById(req, res, next) {
 
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
@@ -305,7 +305,7 @@ export async function getBookingById(req, res, next) {
       .populate('userId', 'name phone location coordinates')
       .populate(
         'physioId',
-        'name specialization location phone experience pricePerSession avatar avgRating totalReviews'
+        'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews'
       )
       .lean();
 
@@ -484,7 +484,7 @@ export async function requestHomeBooking(req, res, next) {
 
     const out = await Booking.findById(booking._id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.status(201).json(out);
   } catch (err) {
@@ -529,6 +529,20 @@ export async function createHomePlan(req, res, next) {
     if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
       return res.status(400).json({ message: 'amountPerSession must be greater than 0' });
     }
+
+    const physioRate = await Physiotherapist.findById(booking.physioId)
+      .select('pricePerSession pricePerSessionMax')
+      .lean();
+    const rateLo = Number(physioRate?.pricePerSession);
+    const rateHi = physioRate?.pricePerSessionMax != null ? Number(physioRate.pricePerSessionMax) : NaN;
+    if (Number.isFinite(rateLo) && Number.isFinite(rateHi) && rateHi > rateLo) {
+      if (amountPerSession < rateLo || amountPerSession > rateHi) {
+        return res.status(400).json({
+          message: `Per-session amount must be between ₹${rateLo} and ₹${rateHi} for this physiotherapist`,
+        });
+      }
+    }
+
     if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 15) {
       return res.status(400).json({ message: 'discountPercent must be between 0 and 15' });
     }
@@ -562,7 +576,7 @@ export async function createHomePlan(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
@@ -603,7 +617,7 @@ export async function collectOfflinePayment(req, res, next) {
     if (ps === 'collected' || ps === 'verified') {
       const out = await Booking.findById(id)
         .populate('userId', 'name phone location coordinates')
-        .populate('physioId', 'name specialization location phone experience pricePerSession')
+        .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
         .lean();
       return res.json(out);
     }
@@ -624,7 +638,7 @@ export async function collectOfflinePayment(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
@@ -686,7 +700,7 @@ export async function verifyOfflinePayment(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
@@ -734,7 +748,7 @@ export async function rejectOfflinePayment(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
@@ -769,7 +783,7 @@ export async function approveHomePlan(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
@@ -888,7 +902,7 @@ export async function rescheduleBooking(req, res, next) {
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.json(out);
   } catch (err) {
