@@ -11,8 +11,16 @@ import {
   applyOfflineVerificationWallet,
 } from '../utils/marketplacePayment.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
+import {
+  getBookablePhysioCount,
+  countActivePrimaryBookingsForSlot,
+} from '../utils/slotCapacity.js';
 
 const ALLOWED_STATUSES = ['pending', 'assigned', 'accepted', 'scheduled', 'completed'];
+const PHYSIO_SLOT_CONFLICT_MSG =
+  'This physiotherapist already has another booking in that time slot';
+const SLOT_AT_PLATFORM_CAPACITY_MSG =
+  'All available physiotherapists are already booked for this time slot';
 
 function defaultBookingAmountRupees() {
   const n = Number(process.env.DEFAULT_BOOKING_AMOUNT_RUPEES);
@@ -56,6 +64,24 @@ function parseSchedule(schedule) {
     normalized.push({ date, time });
   }
   return normalized;
+}
+
+function toObjectIdOrNull(v) {
+  if (!v) return null;
+  if (!mongoose.isValidObjectId(String(v))) return null;
+  return new mongoose.Types.ObjectId(String(v));
+}
+
+async function hasPhysioSlotConflict({ bookingId, physioId, date, timeSlot }) {
+  const pid = toObjectIdOrNull(physioId);
+  if (!pid) return false;
+  const conflict = await Booking.exists({
+    _id: { $ne: bookingId },
+    physioId: pid,
+    date,
+    timeSlot,
+  });
+  return Boolean(conflict);
 }
 
 /**
@@ -105,6 +131,17 @@ export async function createBooking(req, res, next) {
       return res.status(400).json({ message: 'This time slot is no longer available' });
     }
 
+    const platformCapacity = await getBookablePhysioCount();
+    if (platformCapacity < 1) {
+      return res.status(503).json({
+        message: 'No verified physiotherapists are available to take new bookings right now',
+      });
+    }
+    const alreadyBooked = await countActivePrimaryBookingsForSlot(date, normalizedTimeSlot);
+    if (alreadyBooked >= platformCapacity) {
+      return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
+    }
+
     const coords = parseCoords(req.body);
     const userUpdate = {
       name: name.trim(),
@@ -148,7 +185,10 @@ export async function createBooking(req, res, next) {
       });
     } catch (e) {
       if (e?.code === 11000) {
-        return res.status(409).json({ message: 'Selected slot is already booked' });
+        return res.status(409).json({
+          message:
+            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+        });
       }
       throw e;
     }
@@ -376,6 +416,18 @@ export async function updateBooking(req, res, next) {
       }
     }
 
+    if (updates.physioId) {
+      const conflict = await hasPhysioSlotConflict({
+        bookingId: id,
+        physioId: updates.physioId,
+        date: prev.date,
+        timeSlot: prev.timeSlot,
+      });
+      if (conflict) {
+        return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+      }
+    }
+
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: 'No valid fields to update (status or physioId)' });
     }
@@ -419,6 +471,9 @@ export async function updateBooking(req, res, next) {
 
     return res.json(booking);
   } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+    }
     next(err);
   }
 }
@@ -453,6 +508,17 @@ export async function requestHomeBooking(req, res, next) {
       return res.status(400).json({ message: 'This time slot is no longer available' });
     }
 
+    const platformCapacityHome = await getBookablePhysioCount();
+    if (platformCapacityHome < 1) {
+      return res.status(503).json({
+        message: 'No verified physiotherapists are available to take new bookings right now',
+      });
+    }
+    const alreadyBookedHome = await countActivePrimaryBookingsForSlot(date, normalizedTimeSlot);
+    if (alreadyBookedHome >= platformCapacityHome) {
+      return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
+    }
+
     const coords = parseCoords(req.body);
     const userUpdate = { name: name.trim(), location: location.trim() };
     if (coords) userUpdate.coordinates = coords;
@@ -477,7 +543,10 @@ export async function requestHomeBooking(req, res, next) {
       });
     } catch (e) {
       if (e?.code === 11000) {
-        return res.status(409).json({ message: 'Selected slot is already booked' });
+        return res.status(409).json({
+          message:
+            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+        });
       }
       throw e;
     }
@@ -830,9 +899,6 @@ export async function rescheduleBooking(req, res, next) {
       if (booking.physioId?.toString() !== physioId) {
         return res.status(403).json({ message: 'Forbidden' });
       }
-      if (booking.status === 'assigned' && booking.sessionStatus !== 'scheduled') {
-        return res.status(400).json({ message: 'Accept this assignment before rescheduling' });
-      }
     }
 
     if (booking.sessionStatus === 'completed') {
@@ -866,13 +932,14 @@ export async function rescheduleBooking(req, res, next) {
 
     const updatesPrimarySlot = !hasSchedule || scheduleIndex === 0;
     if (updatesPrimarySlot) {
-      const conflict = await Booking.findOne({
-        _id: { $ne: booking._id },
+      const conflict = await hasPhysioSlotConflict({
+        bookingId: booking._id,
+        physioId: booking.physioId,
         date,
         timeSlot: normalizedTimeSlot,
-      }).lean();
+      });
       if (conflict) {
-        return res.status(409).json({ message: 'That slot is already booked' });
+        return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
       }
     }
 
@@ -895,7 +962,7 @@ export async function rescheduleBooking(req, res, next) {
       await booking.save();
     } catch (e) {
       if (e?.code === 11000) {
-        return res.status(409).json({ message: 'That slot is already booked' });
+        return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
       }
       throw e;
     }
@@ -906,6 +973,189 @@ export async function rescheduleBooking(req, res, next) {
       .lean();
     return res.json(out);
   } catch (err) {
+    next(err);
+  }
+}
+
+async function fetchBookingPopulated(bookingId) {
+  return Booking.findById(bookingId)
+    .populate('userId', 'name phone location coordinates')
+    .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+    .lean();
+}
+
+function ensureAdmin(req, res) {
+  if (!req.admin) {
+    res.status(403).json({ message: 'Admin only' });
+    return false;
+  }
+  return true;
+}
+
+export async function addAdminBookingSession(req, res, next) {
+  try {
+    const { id } = req.params;
+    if (!ensureAdmin(req, res)) return;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+
+    const { date, timeSlot } = req.body || {};
+    if (!date || !timeSlot) {
+      return res.status(400).json({ message: 'date and timeSlot are required' });
+    }
+    if (!isValidDateString(date)) {
+      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+    }
+    const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
+    if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'timeSlot is not available' });
+    }
+
+    const todayYmd = todayYMDLocal();
+    if (date < todayYmd) {
+      return res.status(400).json({ message: 'Date must be today or in the future' });
+    }
+    if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'This time slot is no longer available' });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (booking.sessionStatus === 'completed' || booking.status === 'completed') {
+      return res.status(400).json({ message: 'Cannot modify sessions for a completed booking' });
+    }
+
+    const scheduleBase = Array.isArray(booking.schedule) && booking.schedule.length > 0
+      ? booking.schedule
+      : [{ date: booking.date, time: booking.timeSlot }];
+
+    const duplicate = scheduleBase.some((s) => String(s.date) === String(date) && String(s.time) === normalizedTimeSlot);
+    if (duplicate) {
+      return res.status(400).json({ message: 'That session already exists in this booking schedule' });
+    }
+
+    const conflict = await hasPhysioSlotConflict({
+      bookingId: booking._id,
+      physioId: booking.physioId,
+      date,
+      timeSlot: normalizedTimeSlot,
+    });
+    if (conflict) {
+      return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+    }
+
+    booking.schedule = [...scheduleBase, { date, time: normalizedTimeSlot }];
+    booking.sessions = booking.schedule.length;
+    await booking.save();
+
+    const out = await fetchBookingPopulated(id);
+    return res.json(out);
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+    }
+    next(err);
+  }
+}
+
+export async function deleteAdminBookingSession(req, res, next) {
+  try {
+    const { id, sessionId } = req.params;
+    if (!ensureAdmin(req, res)) return;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+    if (!sessionId || !mongoose.isValidObjectId(sessionId)) {
+      return res.status(400).json({ message: 'Invalid session id' });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (booking.sessionStatus === 'completed' || booking.status === 'completed') {
+      return res.status(400).json({ message: 'Cannot modify sessions for a completed booking' });
+    }
+
+    const scheduleBase = Array.isArray(booking.schedule) && booking.schedule.length > 0
+      ? booking.schedule
+      : [{ _id: booking._id, date: booking.date, time: booking.timeSlot }];
+
+    const idx = scheduleBase.findIndex((s) => s?._id && String(s._id) === String(sessionId));
+    if (idx < 0) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+
+    // Removing the last session row collapses to primary-only (empty schedule array).
+    if (scheduleBase.length <= 1) {
+      const only = scheduleBase[idx];
+      const newDate = String(only.date || '').trim();
+      const newTimeSlot = normalizeTimeSlot(only.time);
+      if (!isValidDateString(newDate) || !DAILY_SLOTS.includes(newTimeSlot)) {
+        return res.status(400).json({ message: 'Invalid session data' });
+      }
+      const oldPrimary = { date: booking.date, timeSlot: booking.timeSlot };
+      if (oldPrimary.date !== newDate || oldPrimary.timeSlot !== newTimeSlot) {
+        const conflict = await hasPhysioSlotConflict({
+          bookingId: booking._id,
+          physioId: booking.physioId,
+          date: newDate,
+          timeSlot: newTimeSlot,
+        });
+        if (conflict) {
+          return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+        }
+        booking.previousDate = booking.date;
+        booking.previousTimeSlot = booking.timeSlot;
+        booking.rescheduled = true;
+        booking.rescheduledAt = new Date();
+      }
+      booking.date = newDate;
+      booking.timeSlot = newTimeSlot;
+      booking.schedule = [];
+      booking.sessions = 1;
+      await booking.save();
+      const out = await fetchBookingPopulated(id);
+      return res.json(out);
+    }
+
+    const oldPrimary = { date: booking.date, timeSlot: booking.timeSlot };
+    const nextSchedule = scheduleBase.filter((_, i) => i !== idx);
+    const newPrimary = nextSchedule[0];
+
+    if (
+      oldPrimary.date !== newPrimary.date ||
+      oldPrimary.timeSlot !== newPrimary.time
+    ) {
+      const conflict = await hasPhysioSlotConflict({
+        bookingId: booking._id,
+        physioId: booking.physioId,
+        date: newPrimary.date,
+        timeSlot: newPrimary.time,
+      });
+      if (conflict) {
+        return res.status(409).json({
+          message: 'Cannot delete this session because the new primary slot conflicts for this physiotherapist',
+        });
+      }
+      booking.previousDate = booking.date;
+      booking.previousTimeSlot = booking.timeSlot;
+      booking.rescheduled = true;
+      booking.rescheduledAt = new Date();
+    }
+
+    booking.schedule = nextSchedule;
+    booking.sessions = nextSchedule.length;
+    booking.date = newPrimary.date;
+    booking.timeSlot = newPrimary.time;
+
+    await booking.save();
+
+    const out = await fetchBookingPopulated(id);
+    return res.json(out);
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+    }
     next(err);
   }
 }

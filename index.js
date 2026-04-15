@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { connectDB } from './config/db.js';
+import Booking from './models/Booking.js';
 import { uploadsRoot } from './config/upload.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import physioRoutes from './routes/physioRoutes.js';
@@ -18,6 +19,7 @@ import profileRoutes from './routes/profileRoutes.js';
 import withdrawRoutes from './routes/withdrawRoutes.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import platformRoutes from './routes/platformRoutes.js';
+import seoRoutes from './routes/seoRoutes.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -80,6 +82,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/withdraw', withdrawRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/platform', platformRoutes);
+app.use('/api/seo', seoRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -93,6 +96,17 @@ app.use((err, _req, res, _next) => {
 
 async function main() {
   await connectDB();
+  // Drops legacy unique { date, timeSlot } (and any other indexes not declared on the schema)
+  // so multiple unassigned patients can share the same calendar slot until a physio is assigned.
+  try {
+    await Booking.syncIndexes();
+  } catch (e) {
+    console.error('[db] Booking.syncIndexes failed:', e?.message || e);
+    console.error(
+      '[db] Fix duplicate physio+date+slot rows if any, then run from server/: npm run migrate:booking-slot-index'
+    );
+    throw e;
+  }
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);
   });

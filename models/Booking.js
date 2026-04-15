@@ -120,7 +120,15 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Prevent double-booking race conditions at DB level.
-bookingSchema.index({ date: 1, timeSlot: 1 }, { unique: true });
+// Prevent double-booking for the same physiotherapist and slot.
+// Unassigned requests (physioId=null) are intentionally allowed in parallel.
+bookingSchema.index(
+  { physioId: 1, date: 1, timeSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { physioId: { $type: 'objectId' } },
+    name: 'uniq_physio_slot',
+  }
+);
 
 export default mongoose.model('Booking', bookingSchema);

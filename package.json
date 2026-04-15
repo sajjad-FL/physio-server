@@ -6,7 +6,8 @@
   "scripts": {
     "start": "nodemon index.js",
     "dev": "nodemon --watch . --ext js,mjs,cjs,json index.js",
-    "migrate:phase3": "node scripts/migratePhase3.js"
+    "migrate:phase3": "node scripts/migratePhase3.js",
+    "migrate:booking-slot-index": "node scripts/migrateBookingSlotIndex.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1019.0",

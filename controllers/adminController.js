@@ -212,7 +212,7 @@ export async function resolveAdminDispute(req, res, next) {
       await dispute.save();
     } else if (action === 'release') {
       if (booking.paymentStatus !== 'held') {
-        return res.status(400).json({ message: 'Release only applies when payment is held in escrow' });
+        return res.status(400).json({ message: 'Release only applies when payment is in secure hold' });
       }
       try {
         await releaseEscrowBooking(booking, { requireNotesAndSession: false });

@@ -6,6 +6,9 @@ import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 
+const PHYSIO_SLOT_CONFLICT_MSG =
+  'You already have another booking in that time slot. Please ask admin to reassign this booking or reschedule one of them.';
+
 function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
@@ -124,6 +127,16 @@ export async function respondToAssignment(req, res, next) {
     const userIdForNotify = booking.userId;
 
     if (action === 'accept') {
+      const conflict = await Booking.exists({
+        _id: { $ne: booking._id },
+        physioId,
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+      });
+      if (conflict) {
+        return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+      }
+
       booking.status = 'accepted';
       booking.sessionStatus = 'scheduled';
       await booking.save();
@@ -232,7 +245,7 @@ export async function completeSession(req, res, next) {
     }
 
     if (booking.paymentStatus !== 'held') {
-      return res.status(400).json({ message: 'Payment must be held in escrow to complete session' });
+      return res.status(400).json({ message: 'Payment must be secured before completing the session' });
     }
 
     const canComplete =

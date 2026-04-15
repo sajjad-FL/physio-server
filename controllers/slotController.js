@@ -1,5 +1,8 @@
-import Booking from '../models/Booking.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
+import {
+  getBookablePhysioCount,
+  countActivePrimaryBookingsBySlotForDate,
+} from '../utils/slotCapacity.js';
 
 function isValidDateString(dateStr) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
@@ -19,15 +22,14 @@ export async function getSlots(req, res, next) {
       return res.status(400).json({ message: 'date must be today or in the future' });
     }
 
-    const bookings = await Booking.find({ date }).select({ timeSlot: 1 }).lean();
-    const taken = new Set(bookings.map((b) => b.timeSlot).filter(Boolean));
+    const capacity = await getBookablePhysioCount();
+    const bookedBySlot = await countActivePrimaryBookingsBySlotForDate(date);
 
     const slots = DAILY_SLOTS.map((timeSlot) => {
-      let available = !taken.has(timeSlot);
-      if (date === todayYmd && isSlotStartInPastForToday(timeSlot)) {
-        available = false;
-      }
-      return { timeSlot, available };
+      const past = date === todayYmd && isSlotStartInPastForToday(timeSlot);
+      const booked = bookedBySlot.get(timeSlot) || 0;
+      const available = !past && capacity > 0 && booked < capacity;
+      return { timeSlot, available, booked, capacity };
     });
 
     return res.json({ date, slots });

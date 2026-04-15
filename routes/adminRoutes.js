@@ -17,7 +17,12 @@ import {
   rejectPhysioAdmin,
   getAdminNavCounts,
 } from '../controllers/adminController.js';
-import { getAdminBookingById, rescheduleBooking } from '../controllers/bookingController.js';
+import {
+  addAdminBookingSession,
+  deleteAdminBookingSession,
+  getAdminBookingById,
+  rescheduleBooking,
+} from '../controllers/bookingController.js';
 import {
   getPaymentSummary,
   postSettleCommission,
@@ -45,6 +50,8 @@ router.get('/disputes', requireAdmin, listDisputes);
 router.patch('/disputes/:id', requireAdmin, resolveAdminDispute);
 router.get('/bookings/:id', requireAdmin, getAdminBookingById);
 router.patch('/bookings/:id/reschedule', requireAdmin, rescheduleBooking);
+router.post('/bookings/:id/sessions', requireAdmin, addAdminBookingSession);
+router.delete('/bookings/:id/sessions/:sessionId', requireAdmin, deleteAdminBookingSession);
 router.get('/payments/offline', requireAdmin, listOfflinePaymentsQueue);
 router.get('/payments/summary', requireAdmin, getPaymentSummary);
 router.get('/payments/physios', requireAdmin, listPhysiosWalletTable);

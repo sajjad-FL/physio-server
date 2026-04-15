@@ -141,12 +141,12 @@ export async function verifyPayment(req, res, next) {
       await sendSMS({
         to: userPhone,
         message:
-          'Payment received (held in escrow). Your physiotherapist has been assigned for your home visit.',
+          'Payment received and secured. Your physiotherapist has been assigned for your home visit.',
       });
       await sendWhatsApp({
         to: userPhone,
         message:
-          'Payment is confirmed and held. We will reach out with your appointment confirmation shortly.',
+          'Payment is confirmed and secured. We will reach out with your appointment confirmation shortly.',
       });
     } else {
       await sendSMS({
@@ -157,7 +157,7 @@ export async function verifyPayment(req, res, next) {
       await sendWhatsApp({
         to: userPhone,
         message:
-          'Payment is held in escrow. Our team will assign a physiotherapist and notify you shortly.',
+          'Payment is secured. Our team will assign a physiotherapist and notify you shortly.',
       });
     }
 
