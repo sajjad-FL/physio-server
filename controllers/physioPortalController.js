@@ -1,10 +1,15 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
+import Payment from '../models/Payment.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
+import {
+  deriveBookingPaymentSummary,
+  computeUnlockedSessions,
+} from '../utils/installmentRollup.js';
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'You already have another booking in that time slot. Please ask admin to reassign this booking or reschedule one of them.';
@@ -49,7 +54,12 @@ export async function getPhysioBookingById(req, res, next) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
-    return res.json(booking);
+    const payments = await Payment.find({ bookingId: booking._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    const paymentSummary = deriveBookingPaymentSummary(booking, payments);
+
+    return res.json({ ...booking, payments, paymentSummary });
   } catch (err) {
     next(err);
   }
@@ -214,55 +224,235 @@ export async function patchLocation(req, res, next) {
   }
 }
 
-export async function completeSession(req, res, next) {
-  try {
-    const { bookingId } = req.params;
-    if (!mongoose.isValidObjectId(bookingId)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
-    }
+function ymdToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-    const booking = await Booking.findById(bookingId);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (booking.physioId?.toString() !== req.physio.id) {
-      return res.status(403).json({ message: 'Forbidden' });
+/**
+ * Re-compute the booking-level sessionStatus/status rollup from per-session
+ * schedule entries. Booking is considered "completed" when every scheduled
+ * entry has a terminal state (completed or no_show) AND at least one entry
+ * is actually completed. No-show-only plans are not auto-completed.
+ *
+ * Mutates the given booking document in place.
+ */
+function rollupBookingSessionStatus(booking) {
+  if (!Array.isArray(booking.schedule) || booking.schedule.length === 0) return;
+  const entries = booking.schedule;
+  const hasCompleted = entries.some((e) => e.status === 'completed');
+  const allTerminal = entries.every(
+    (e) => e.status === 'completed' || e.status === 'no_show',
+  );
+  if (hasCompleted && allTerminal) {
+    booking.sessionStatus = 'completed';
+    booking.status = 'completed';
+  }
+}
+
+/**
+ * Shared guardrails for per-session state transitions initiated by the
+ * assigned physio. Returns either { ok: true, booking } or { ok: false, res }
+ * where res has already been written to.
+ */
+async function loadBookingForSessionMutation(req, res) {
+  const { bookingId } = req.params;
+  if (!mongoose.isValidObjectId(bookingId)) {
+    res.status(400).json({ message: 'Invalid booking id' });
+    return { ok: false };
+  }
+
+  const booking = await Booking.findById(bookingId);
+  if (!booking) {
+    res.status(404).json({ message: 'Booking not found' });
+    return { ok: false };
+  }
+  if (booking.physioId?.toString() !== req.physio.id) {
+    res.status(403).json({ message: 'Forbidden' });
+    return { ok: false };
+  }
+
+  const canTransition =
+    booking.status === 'accepted' ||
+    booking.status === 'scheduled' ||
+    booking.status === 'completed' ||
+    (booking.status === 'assigned' && booking.sessionStatus === 'scheduled');
+  if (!canTransition) {
+    res.status(400).json({
+      message: 'Accept the assignment before marking this session complete',
+    });
+    return { ok: false };
+  }
+
+  return { ok: true, booking };
+}
+
+/**
+ * Strict coverage gate for session state transitions. Physio can only move
+ * session #N if verified Payment rows cover N sessions.
+ *
+ * Writes a response + returns `{ ok: false }` on failure; otherwise returns
+ * `{ ok: true, summary, ordinal }`.
+ */
+async function enforcePaymentCoverage(booking, sessionId, res) {
+  const payments = await Payment.find({ bookingId: booking._id }).lean();
+  const hasSchedule = Array.isArray(booking.schedule) && booking.schedule.length > 0;
+  const sessionsCount = hasSchedule ? booking.schedule.length : 1;
+
+  let ordinal = 1;
+  if (sessionId && hasSchedule) {
+    const idx = booking.schedule.findIndex((s) => String(s._id) === String(sessionId));
+    if (idx < 0) {
+      res.status(404).json({ message: 'Session not found on this booking' });
+      return { ok: false };
     }
-    const isOffline =
+    ordinal = idx + 1;
+  }
+
+  // Back-compat: legacy single-session bookings that went through the atomic
+  // /payment/verify flow won't have Payment rows yet. Fall back to the legacy
+  // booking-level status check when no installments exist.
+  if (payments.length === 0) {
+    const offline =
       booking.payment?.mode === 'offline' ||
       (booking.serviceType === 'home' && booking.homePlanPaymentMode === 'offline');
-    if (isOffline) {
-      if (booking.payment?.status !== 'verified') {
+    const isPaid = offline
+      ? booking.payment?.status === 'verified'
+      : booking.payment?.status === 'paid';
+    const totalAmount = Number(booking.totalAmount || booking.payment?.amount || 0);
+    const totalPaidLegacy =
+      isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
+    const unlocked = computeUnlockedSessions(sessionsCount, totalPaidLegacy, totalAmount);
+    if (ordinal > unlocked) {
+      res.status(400).json({
+        message:
+          `Session #${ordinal} is locked. Currently unlocked: up to session #${unlocked} of ${sessionsCount}.`,
+        code: 'payment_coverage_insufficient',
+      });
+      return { ok: false };
+    }
+    return { ok: true, ordinal };
+  }
+
+  const summary = deriveBookingPaymentSummary(booking, payments);
+  const unlocked = Number(summary.unlockedSessions || 0);
+
+  if (ordinal > unlocked) {
+    const hint =
+      unlocked === 0
+        ? 'Collect at least one installment before marking any session.'
+        : `Currently unlocked: up to session #${unlocked} of ${sessionsCount}. Collect the next installment to open more.`;
+    res.status(400).json({
+      message: `Session #${ordinal} is locked. ${hint}`,
+      code: 'payment_coverage_insufficient',
+      paymentSummary: summary,
+    });
+    return { ok: false };
+  }
+
+  return { ok: true, summary, ordinal };
+}
+
+function findScheduleEntry(booking, sessionId) {
+  if (!sessionId || !Array.isArray(booking.schedule)) return null;
+  return booking.schedule.id(sessionId) || null;
+}
+
+export async function completeSession(req, res, next) {
+  try {
+    const loaded = await loadBookingForSessionMutation(req, res);
+    if (!loaded.ok) return;
+    const { booking } = loaded;
+    const { sessionId } = req.params;
+    const physioId = req.physio.id;
+
+    const hasSchedule = Array.isArray(booking.schedule) && booking.schedule.length > 0;
+
+    const gated = await enforcePaymentCoverage(booking, sessionId, res);
+    if (!gated.ok) return;
+
+    if (sessionId) {
+      const entry = findScheduleEntry(booking, sessionId);
+      if (!entry) {
+        return res.status(404).json({ message: 'Session not found on this booking' });
+      }
+      if (entry.status === 'completed') {
+        return res.status(400).json({ message: 'This session is already completed' });
+      }
+      if (entry.date && entry.date > ymdToday()) {
         return res.status(400).json({
           message:
-            'Offline payment must be verified by admin before the session can be completed',
+            'This session is in the future. Reschedule it to today first if it actually happened.',
         });
       }
-    } else {
-      if (booking.payment?.status !== 'paid') {
-        return res.status(400).json({
-          message: 'Patient payment must be confirmed before the session can be completed',
-        });
-      }
-    }
-
-    if (booking.paymentStatus !== 'held') {
-      return res.status(400).json({ message: 'Payment must be secured before completing the session' });
-    }
-
-    const canComplete =
-      booking.status === 'accepted' ||
-      booking.status === 'scheduled' ||
-      (booking.status === 'assigned' && booking.sessionStatus === 'scheduled');
-    if (!canComplete) {
+      entry.status = 'completed';
+      entry.completedAt = new Date();
+      entry.completedBy = physioId;
+      rollupBookingSessionStatus(booking);
+    } else if (hasSchedule) {
       return res.status(400).json({
-        message: 'Accept the assignment before marking this session complete',
+        message:
+          'This booking has multiple sessions; specify which session to complete.',
+      });
+    } else {
+      if (booking.sessionStatus === 'completed') {
+        return res.status(400).json({ message: 'This booking is already completed' });
+      }
+      booking.sessionStatus = 'completed';
+      booking.status = 'completed';
+    }
+
+    await booking.save();
+
+    const out = await Booking.findById(booking._id)
+      .populate('userId', 'name phone location')
+      .populate('physioId', 'name specialization location')
+      .lean();
+
+    return res.json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function markSessionNoShow(req, res, next) {
+  try {
+    const loaded = await loadBookingForSessionMutation(req, res);
+    if (!loaded.ok) return;
+    const { booking } = loaded;
+    const { sessionId } = req.params;
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+
+    if (!sessionId) {
+      return res.status(400).json({ message: 'Session id is required' });
+    }
+
+    const gated = await enforcePaymentCoverage(booking, sessionId, res);
+    if (!gated.ok) return;
+
+    const entry = findScheduleEntry(booking, sessionId);
+    if (!entry) {
+      return res.status(404).json({ message: 'Session not found on this booking' });
+    }
+    if (entry.status === 'completed') {
+      return res.status(400).json({
+        message: 'Completed sessions cannot be switched to no-show',
+      });
+    }
+    if (entry.date && entry.date > ymdToday()) {
+      return res.status(400).json({
+        message: 'Future sessions cannot be marked no-show yet',
       });
     }
 
-    booking.sessionStatus = 'completed';
-    booking.status = 'completed';
+    entry.status = 'no_show';
+    entry.noShowReason = reason;
+    entry.completedAt = null;
+    entry.completedBy = null;
+    rollupBookingSessionStatus(booking);
     await booking.save();
 
-    const out = await Booking.findById(bookingId)
+    const out = await Booking.findById(booking._id)
       .populate('userId', 'name phone location')
       .populate('physioId', 'name specialization location')
       .lean();

@@ -47,11 +47,15 @@ const transactionSchema = new mongoose.Schema(
 );
 
 transactionSchema.index({ physioId: 1, createdAt: -1 });
+// Widened to include `meta.paymentId` so multi-installment bookings can post
+// one credit/commission pair per Payment. Legacy rows without paymentId still
+// dedupe correctly because Mongo treats missing keys as null during indexing.
 transactionSchema.index(
-  { bookingId: 1, physioId: 1, type: 1, direction: 1, 'meta.leg': 1 },
+  { bookingId: 1, physioId: 1, type: 1, direction: 1, 'meta.leg': 1, 'meta.paymentId': 1 },
   {
     unique: true,
     partialFilterExpression: { status: 'posted', 'meta.leg': { $type: 'string' } },
+    name: 'uniq_posted_leg_per_payment',
   }
 );
 

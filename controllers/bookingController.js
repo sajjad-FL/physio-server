@@ -3,6 +3,7 @@ import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import Review from '../models/Review.js';
+import Payment from '../models/Payment.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
@@ -15,6 +16,18 @@ import {
   getBookablePhysioCount,
   countActivePrimaryBookingsForSlot,
 } from '../utils/slotCapacity.js';
+import { deriveBookingPaymentSummary } from '../utils/installmentRollup.js';
+
+async function attachPaymentsAndSummary(booking) {
+  if (!booking?._id) return { payments: [], paymentSummary: null };
+  const payments = await Payment.find({ bookingId: booking._id })
+    .sort({ createdAt: -1 })
+    .lean();
+  return {
+    payments,
+    paymentSummary: deriveBookingPaymentSummary(booking, payments),
+  };
+}
 
 const ALLOWED_STATUSES = ['pending', 'assigned', 'accepted', 'scheduled', 'completed'];
 const PHYSIO_SLOT_CONFLICT_MSG =
@@ -326,7 +339,8 @@ export async function getAdminBookingById(req, res, next) {
       .lean();
 
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    return res.json(booking);
+    const { payments, paymentSummary } = await attachPaymentsAndSummary(booking);
+    return res.json({ ...booking, payments, paymentSummary });
   } catch (err) {
     next(err);
   }
@@ -356,9 +370,23 @@ export async function getBookingById(req, res, next) {
 
     const sessionDone = booking.sessionStatus === 'completed' && booking.status === 'completed';
     let reviewForBooking = null;
-    if (userId && sessionDone && booking.physioId) {
-      reviewForBooking = await Review.findOne({ bookingId: id }).select('rating comment createdAt').lean();
+    let sessionReviews = [];
+    if (userId && booking.physioId) {
+      const rows = await Review.find({ bookingId: id, userId })
+        .select('sessionId rating comment createdAt')
+        .lean();
+      reviewForBooking = rows.find((r) => r.sessionId == null) || null;
+      sessionReviews = rows
+        .filter((r) => r.sessionId != null)
+        .map((r) => ({
+          sessionId: String(r.sessionId),
+          rating: r.rating,
+          comment: r.comment || '',
+          createdAt: r.createdAt,
+        }));
     }
+
+    const { payments, paymentSummary } = await attachPaymentsAndSummary(booking);
 
     return res.json({
       ...booking,
@@ -366,6 +394,9 @@ export async function getBookingById(req, res, next) {
         canSubmit: Boolean(userId && sessionDone && booking.physioId && !reviewForBooking),
         submitted: reviewForBooking,
       },
+      sessionReviews,
+      payments,
+      paymentSummary,
     });
   } catch (err) {
     next(err);
@@ -384,7 +415,7 @@ export async function updateBooking(req, res, next) {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
-    const { status, physioId } = req.body || {};
+    const { status, physioId, amountPerSession: amountPerSessionRaw } = req.body || {};
     const updates = {};
 
     if (status !== undefined) {
@@ -428,8 +459,42 @@ export async function updateBooking(req, res, next) {
       }
     }
 
+    /**
+     * Admin may set (or revise) the per-session price when assigning a physio.
+     * This recomputes totalAmount, amountPaise and the marketplace commission split
+     * so downstream Razorpay orders and wallet credits reflect the admin-set price.
+     * Multi-session home plans are priced separately via createHomePlan and their
+     * discount is preserved here if already present.
+     */
+    if (amountPerSessionRaw !== undefined && amountPerSessionRaw !== null && amountPerSessionRaw !== '') {
+      const amountPerSession = Number(amountPerSessionRaw);
+      if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
+        return res.status(400).json({ message: 'amountPerSession must be a positive number' });
+      }
+      if (prev.paymentStatus === 'held' || prev.paymentStatus === 'refunded') {
+        return res.status(409).json({
+          message:
+            'Cannot change the session price after payment is held or refunded. Refund and rebook if needed.',
+        });
+      }
+      const sessionsCount = Math.max(1, Number(prev.sessions) || 1);
+      const discountPercent = Number(prev.discountPercent) > 0 ? Number(prev.discountPercent) : 0;
+      const subtotal = amountPerSession * sessionsCount;
+      const totalAmount = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
+      const split = computeMarketplaceSplit(totalAmount);
+
+      updates.amountPerSession = amountPerSession;
+      updates.totalAmount = totalAmount;
+      updates.amountPaise = Math.round(totalAmount * 100);
+      updates['payment.amount'] = split.amount;
+      updates['payment.commission'] = split.commission;
+      updates['payment.physioEarning'] = split.physioEarning;
+    }
+
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ message: 'No valid fields to update (status or physioId)' });
+      return res
+        .status(400)
+        .json({ message: 'No valid fields to update (status, physioId, or amountPerSession)' });
     }
 
     const booking = await Booking.findByIdAndUpdate(id, updates, {

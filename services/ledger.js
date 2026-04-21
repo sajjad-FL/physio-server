@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Transaction from '../models/Transaction.js';
 import { roundMoney2 } from '../utils/marketplacePayment.js';
 import { computeCommissionDue } from '../utils/ledgerBalance.js';
+import { getPlatformCommissionPercent } from '../config/commission.js';
 
 const POSTED = 'posted';
 
@@ -10,6 +11,14 @@ function splitFromBooking(booking) {
   const commission = roundMoney2(Number(booking.payment?.commission ?? 0));
   const physioEarning = roundMoney2(Number(booking.payment?.physioEarning ?? 0));
   return { gross, commission, physioEarning };
+}
+
+function splitFromAmount(amountRupees) {
+  const amount = roundMoney2(Math.max(0, Number(amountRupees) || 0));
+  const pct = getPlatformCommissionPercent();
+  const commission = roundMoney2((amount * pct) / 100);
+  const physioEarning = roundMoney2(Math.max(0, amount - commission));
+  return { gross: amount, commission, physioEarning };
 }
 
 /**
@@ -90,6 +99,102 @@ export async function postOfflinePair(booking) {
             direction: 'debit',
             status: POSTED,
             meta: { leg: 'commission' },
+          },
+        ]
+      : []),
+  ]);
+  return { created: true };
+}
+
+/**
+ * Online installment: credit the physio's slice of one Payment row.
+ * Keyed by `meta.paymentId` so multiple installments on the same booking
+ * coexist. The `meta.leg` stays `'earning'` so existing wallet aggregations
+ * still match (they sum by leg).
+ */
+export async function postOnlineInstallmentCredit(booking, payment) {
+  const physioId = booking.physioId;
+  if (!physioId) return { created: false, reason: 'no_physio' };
+  const { gross, commission, physioEarning } = splitFromAmount(payment.amount);
+  if (!Number.isFinite(physioEarning) || physioEarning <= 0) {
+    return { created: false, reason: 'no_earning' };
+  }
+
+  const paymentId = String(payment._id);
+  const existing = await Transaction.findOne({
+    bookingId: booking._id,
+    physioId,
+    type: 'online',
+    direction: 'credit',
+    status: POSTED,
+    'meta.leg': 'earning',
+    'meta.paymentId': paymentId,
+  }).lean();
+  if (existing) return { created: false, reason: 'duplicate', transactionId: existing._id };
+
+  await Transaction.create({
+    bookingId: booking._id,
+    physioId,
+    type: 'online',
+    totalAmount: physioEarning,
+    commission,
+    physioEarning,
+    direction: 'credit',
+    status: POSTED,
+    meta: {
+      leg: 'earning',
+      paymentId,
+      gross,
+    },
+  });
+  return { created: true };
+}
+
+/**
+ * Offline installment: record gross cash collection + platform commission due
+ * for one Payment row.
+ */
+export async function postOfflineInstallmentPair(booking, payment) {
+  const physioId = booking.physioId;
+  if (!physioId) return { created: false, reason: 'no_physio' };
+  const { gross, commission } = splitFromAmount(payment.amount);
+  if (!Number.isFinite(gross) || gross <= 0) return { created: false, reason: 'no_gross' };
+
+  const paymentId = String(payment._id);
+  const dup = await Transaction.findOne({
+    bookingId: booking._id,
+    physioId,
+    type: 'offline',
+    status: POSTED,
+    'meta.leg': 'gross',
+    'meta.paymentId': paymentId,
+  }).lean();
+  if (dup) return { created: false, reason: 'duplicate' };
+
+  await Transaction.create([
+    {
+      bookingId: booking._id,
+      physioId,
+      type: 'offline',
+      totalAmount: gross,
+      commission,
+      physioEarning: gross,
+      direction: 'credit',
+      status: POSTED,
+      meta: { leg: 'gross', paymentId },
+    },
+    ...(commission > 0
+      ? [
+          {
+            bookingId: booking._id,
+            physioId,
+            type: 'offline',
+            totalAmount: commission,
+            commission,
+            physioEarning: 0,
+            direction: 'debit',
+            status: POSTED,
+            meta: { leg: 'commission', paymentId },
           },
         ]
       : []),

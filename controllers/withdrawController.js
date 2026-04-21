@@ -90,6 +90,7 @@ export async function updateWithdrawStatus(req, res, next) {
     if (!['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ message: 'status must be approved or rejected' });
     }
+    const note = String(req.body?.note || req.body?.reason || '').trim().slice(0, 500);
 
     const reqDoc = await WithdrawRequest.findById(id).lean();
     if (!reqDoc) {
@@ -139,7 +140,7 @@ export async function updateWithdrawStatus(req, res, next) {
         status: 'posted',
         meta: {
           withdrawRequestId: String(reqDoc._id),
-          note: 'Withdrawal payout',
+          note: note || 'Withdrawal payout',
         },
       });
     } catch (txErr) {

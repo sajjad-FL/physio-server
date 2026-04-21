@@ -21,6 +21,9 @@ const withdrawRequestSchema = new mongoose.Schema(
     },
     requestedAt: { type: Date, default: () => new Date() },
     processedAt: { type: Date, default: null },
+    note: { type: String, default: '', trim: true, maxlength: 500 },
+    payoutReference: { type: String, default: '', trim: true, maxlength: 120 },
+    rejectReason: { type: String, default: '', trim: true, maxlength: 500 },
   },
   { timestamps: true }
 );

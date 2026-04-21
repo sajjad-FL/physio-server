@@ -55,6 +55,18 @@ const bookingSchema = new mongoose.Schema(
               createdAt: { type: Date, default: null },
               updatedAt: { type: Date, default: null },
             },
+            status: {
+              type: String,
+              enum: ['scheduled', 'completed', 'no_show'],
+              default: 'scheduled',
+            },
+            completedAt: { type: Date, default: null },
+            completedBy: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'Physiotherapist',
+              default: null,
+            },
+            noShowReason: { type: String, default: '', trim: true },
           },
           { _id: true }
         ),
@@ -107,6 +119,13 @@ const bookingSchema = new mongoose.Schema(
       commission: { type: Number, default: null },
       physioEarning: { type: Number, default: null },
     },
+
+    /**
+     * Cached sum of verified Payment rows (rupees). Kept in sync by
+     * recomputeBookingPaymentRollup whenever an installment changes state.
+     * Falls back to 0 when no installments exist.
+     */
+    totalPaid: { type: Number, default: 0, min: 0 },
 
     /** Set when payment is confirmed (online verify or offline verification) */
     paidAt: { type: Date, default: null },

@@ -27,8 +27,13 @@ import {
   getPaymentSummary,
   postSettleCommission,
   listPhysiosWalletTable,
+  getPhysioFinanceDetail,
 } from '../controllers/paymentAnalyticsController.js';
-import { listOfflinePaymentsQueue } from '../controllers/adminPaymentsController.js';
+import { listPaymentsQueue } from '../controllers/adminPaymentsController.js';
+import {
+  adminVerifyPayment,
+  adminRejectPayment,
+} from '../controllers/installmentsController.js';
 import { getAdminPlatformSettings, patchAdminPlatformSettings, uploadPhysioNdaTemplate } from '../controllers/platformSettingsController.js';
 
 const router = Router();
@@ -52,10 +57,13 @@ router.get('/bookings/:id', requireAdmin, getAdminBookingById);
 router.patch('/bookings/:id/reschedule', requireAdmin, rescheduleBooking);
 router.post('/bookings/:id/sessions', requireAdmin, addAdminBookingSession);
 router.delete('/bookings/:id/sessions/:sessionId', requireAdmin, deleteAdminBookingSession);
-router.get('/payments/offline', requireAdmin, listOfflinePaymentsQueue);
-router.get('/payments/summary', requireAdmin, getPaymentSummary);
-router.get('/payments/physios', requireAdmin, listPhysiosWalletTable);
-router.post('/payments/settle-commission', requireAdmin, postSettleCommission);
+router.get('/payments', requireAdmin, listPaymentsQueue);
+router.post('/payments/:paymentId/verify', requireAdmin, adminVerifyPayment);
+router.post('/payments/:paymentId/reject', requireAdmin, adminRejectPayment);
+router.get('/finance/summary', requireAdmin, getPaymentSummary);
+router.get('/finance/physios', requireAdmin, listPhysiosWalletTable);
+router.get('/finance/physios/:id', requireAdmin, getPhysioFinanceDetail);
+router.post('/finance/settle-commission', requireAdmin, postSettleCommission);
 router.get('/platform/settings', requireAdmin, getAdminPlatformSettings);
 router.patch('/platform/settings', requireAdmin, patchAdminPlatformSettings);
 router.post('/platform/physio-nda', requireAdmin, uploadPhysioNdaTemplate);

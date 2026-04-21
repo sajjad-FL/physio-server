@@ -12,11 +12,13 @@ import {
   patchAvailability,
   patchLocation,
   completeSession,
+  markSessionNoShow,
   getMe,
 } from '../controllers/physioPortalController.js';
 import { getWalletDashboard, listWalletTransactions } from '../controllers/walletController.js';
 import { uploadDocuments, uploadOnboardingFiles as saveOnboardingFiles } from '../controllers/physioUploadController.js';
 import { getOnboarding, patchOnboarding, submitOnboarding } from '../controllers/onboardingController.js';
+import { recordOfflineCollection } from '../controllers/installmentsController.js';
 
 const router = Router();
 
@@ -40,7 +42,18 @@ router.patch('/bookings/:id/assignment', ...physioOperationalChain, respondToAss
 router.get('/bookings/:id', ...physioOperationalChain, getPhysioBookingById);
 router.patch('/availability', ...physioOperationalChain, patchAvailability);
 router.patch('/location', ...physioOperationalChain, patchLocation);
+router.post('/bookings/:id/collections', ...physioOperationalChain, recordOfflineCollection);
 router.post('/sessions/:bookingId/complete', ...physioOperationalChain, completeSession);
+router.post(
+  '/sessions/:bookingId/:sessionId/complete',
+  ...physioOperationalChain,
+  completeSession,
+);
+router.post(
+  '/sessions/:bookingId/:sessionId/no-show',
+  ...physioOperationalChain,
+  markSessionNoShow,
+);
 router.post(
   '/upload-documents',
   ...physioOnboardingChain,

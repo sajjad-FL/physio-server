@@ -6,6 +6,7 @@ import { displayVerificationStatus } from '../utils/physioVerification.js';
 import Dispute from '../models/Dispute.js';
 import Booking from '../models/Booking.js';
 import WithdrawRequest from '../models/WithdrawRequest.js';
+import Payment from '../models/Payment.js';
 import { listAllPhysioWalletsSummary } from '../utils/ledgerBalance.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { postOnlineRefundDebit } from '../services/ledger.js';
@@ -19,16 +20,10 @@ function readPagination(query) {
 /** Sidebar badges: actionable counts per admin section. */
 export async function getAdminNavCounts(_req, res, next) {
   try {
-    const offlineQueueBase = {
-      serviceType: 'home',
-      homePlanPaymentMode: 'offline',
-      planStatus: 'approved',
-    };
-
     const [
       bookings,
       payments,
-      withdrawals,
+      pendingWithdrawals,
       physiosPending,
       verifications,
       disputes,
@@ -38,10 +33,7 @@ export async function getAdminNavCounts(_req, res, next) {
         status: 'pending',
         $or: [{ physioId: null }, { physioId: { $exists: false } }],
       }),
-      Booking.countDocuments({
-        ...offlineQueueBase,
-        'payment.status': { $in: ['pending', 'collected'] },
-      }),
+      Payment.countDocuments({ mode: 'offline', status: 'collected' }),
       WithdrawRequest.countDocuments({ status: 'pending' }),
       Physiotherapist.countDocuments({ verificationStatus: 'pending' }),
       Physiotherapist.countDocuments({ verificationStatus: { $ne: 'approved' } }),
@@ -49,13 +41,14 @@ export async function getAdminNavCounts(_req, res, next) {
       listAllPhysioWalletsSummary(),
     ]);
 
-    const settlements = walletRows.filter((r) => Number(r.wallet?.commissionDue || 0) > 0.009).length;
+    // Finance badge surfaces any physio with commission due OR a pending payout.
+    const duePhysios = walletRows.filter((r) => Number(r.wallet?.commissionDue || 0) > 0.009).length;
+    const finance = duePhysios + pendingWithdrawals;
 
     return res.json({
       bookings,
       payments,
-      withdrawals,
-      settlements,
+      finance,
       physios: physiosPending,
       verifications,
       disputes,

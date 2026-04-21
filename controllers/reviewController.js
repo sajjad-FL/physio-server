@@ -21,7 +21,7 @@ export async function createReview(req, res, next) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    const { bookingId, rating: ratingRaw, comment } = req.body || {};
+    const { bookingId, sessionId: sessionIdRaw, rating: ratingRaw, comment } = req.body || {};
     if (!mongoose.isValidObjectId(bookingId)) {
       return res.status(400).json({ message: 'Valid bookingId is required' });
     }
@@ -33,11 +33,6 @@ export async function createReview(req, res, next) {
 
     const text = comment != null ? String(comment).trim().slice(0, 2000) : '';
 
-    const existing = await Review.findOne({ bookingId }).lean();
-    if (existing) {
-      return res.status(400).json({ message: 'You have already reviewed this booking' });
-    }
-
     const booking = await Booking.findById(bookingId).lean();
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -45,17 +40,45 @@ export async function createReview(req, res, next) {
     if (String(booking.userId) !== userId) {
       return res.status(403).json({ message: 'Forbidden' });
     }
-    if (booking.sessionStatus !== 'completed' || booking.status !== 'completed') {
-      return res.status(400).json({ message: 'You can only review after the session is completed' });
-    }
     if (!booking.physioId) {
       return res.status(400).json({ message: 'No physiotherapist assigned to this booking' });
+    }
+
+    let sessionId = null;
+    if (sessionIdRaw != null && String(sessionIdRaw).length > 0) {
+      if (!mongoose.isValidObjectId(sessionIdRaw)) {
+        return res.status(400).json({ message: 'Invalid sessionId' });
+      }
+      sessionId = new mongoose.Types.ObjectId(String(sessionIdRaw));
+      const entry = (booking.schedule || []).find(
+        (s) => String(s._id) === String(sessionId),
+      );
+      if (!entry) {
+        return res.status(404).json({ message: 'Session not found on this booking' });
+      }
+      if (entry.status !== 'completed') {
+        return res
+          .status(400)
+          .json({ message: 'You can only rate a session after it is marked completed' });
+      }
+    } else if (booking.sessionStatus !== 'completed' || booking.status !== 'completed') {
+      return res
+        .status(400)
+        .json({ message: 'You can only review after the session is completed' });
+    }
+
+    const existing = await Review.findOne({ bookingId, sessionId }).lean();
+    if (existing) {
+      return res
+        .status(400)
+        .json({ message: 'You have already reviewed this session' });
     }
 
     const review = await Review.create({
       physioId: booking.physioId,
       userId,
       bookingId,
+      sessionId,
       rating,
       comment: text,
     });
@@ -63,6 +86,44 @@ export async function createReview(req, res, next) {
     await syncPhysioReviewAggregates(booking.physioId);
 
     return res.status(201).json(review.toObject());
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listMyReviewsForBooking(req, res, next) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    const { bookingId } = req.params;
+    if (!mongoose.isValidObjectId(bookingId)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+
+    const booking = await Booking.findById(bookingId).select('userId').lean();
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found' });
+    }
+    if (String(booking.userId) !== userId) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const reviews = await Review.find({ bookingId, userId })
+      .select('sessionId rating comment createdAt')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    return res.json({
+      data: reviews.map((r) => ({
+        _id: String(r._id),
+        sessionId: r.sessionId ? String(r.sessionId) : null,
+        rating: r.rating,
+        comment: r.comment || '',
+        createdAt: r.createdAt,
+      })),
+    });
   } catch (err) {
     next(err);
   }

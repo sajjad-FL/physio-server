@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createReview } from '../controllers/reviewController.js';
+import { createReview, listMyReviewsForBooking } from '../controllers/reviewController.js';
 import { authenticateJwt } from '../middleware/authenticateJwt.js';
 import { requireCompleteProfile } from '../middleware/requireCompleteProfile.js';
 import { requireRoles } from '../middleware/rbacMiddleware.js';
@@ -12,6 +12,13 @@ router.post(
   requireCompleteProfile,
   requireRoles('user'),
   createReview
+);
+
+router.get(
+  '/booking/:bookingId',
+  authenticateJwt,
+  requireRoles('user'),
+  listMyReviewsForBooking
 );
 
 export default router;
