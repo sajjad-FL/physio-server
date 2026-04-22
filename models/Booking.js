@@ -81,6 +81,14 @@ const bookingSchema = new mongoose.Schema(
     },
     totalAmount: { type: Number, min: 0, default: null },
     amountPerSession: { type: Number, min: 0, default: null },
+    /** Captured straight-line distance between patient and assigned physio at assignment time (km). */
+    distanceKmAtAssign: { type: Number, min: 0, default: null },
+    /** Extra chargeable km above base radius, computed with floor rule. */
+    distanceExtraKm: { type: Number, min: 0, default: 0 },
+    /** Surcharge rate used at assignment time (INR per km). */
+    distanceSurchargePerKm: { type: Number, min: 0, default: 0 },
+    /** Total distance surcharge amount in INR added to booking total. */
+    distanceSurchargeAmount: { type: Number, min: 0, default: 0 },
     discountPercent: { type: Number, min: 0, max: 15, default: null },
     homePlanPaymentMode: {
       type: String,

@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
+import { distanceKm } from '../utils/geo.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
@@ -34,6 +35,8 @@ const PHYSIO_SLOT_CONFLICT_MSG =
   'This physiotherapist already has another booking in that time slot';
 const SLOT_AT_PLATFORM_CAPACITY_MSG =
   'All available physiotherapists are already booked for this time slot';
+const DISTANCE_SURCHARGE_BASE_KM = 5;
+const DISTANCE_SURCHARGE_PER_KM = 5;
 
 function defaultBookingAmountRupees() {
   const n = Number(process.env.DEFAULT_BOOKING_AMOUNT_RUPEES);
@@ -65,6 +68,37 @@ function parseCoords(body) {
   const ln = Number(lng);
   if (Number.isNaN(la) || Number.isNaN(ln)) return null;
   return { lat: la, lng: ln };
+}
+
+function parseLatLng(coords) {
+  if (!coords || typeof coords !== 'object') return null;
+  const lat = Number(coords.lat);
+  const lng = Number(coords.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function computeDistanceSurcharge(patientCoords, physioCoords) {
+  const patient = parseLatLng(patientCoords);
+  const physio = parseLatLng(physioCoords);
+  if (!patient || !physio) {
+    return {
+      distanceKmAtAssign: null,
+      distanceExtraKm: 0,
+      distanceSurchargePerKm: 0,
+      distanceSurchargeAmount: 0,
+    };
+  }
+  const km = distanceKm(patient.lat, patient.lng, physio.lat, physio.lng);
+  const floored = Math.floor(km);
+  const extraKm = Math.max(0, floored - DISTANCE_SURCHARGE_BASE_KM);
+  const surcharge = extraKm * DISTANCE_SURCHARGE_PER_KM;
+  return {
+    distanceKmAtAssign: km,
+    distanceExtraKm: extraKm,
+    distanceSurchargePerKm: extraKm > 0 ? DISTANCE_SURCHARGE_PER_KM : 0,
+    distanceSurchargeAmount: surcharge,
+  };
 }
 
 function parseSchedule(schedule) {
@@ -417,6 +451,7 @@ export async function updateBooking(req, res, next) {
 
     const { status, physioId, amountPerSession: amountPerSessionRaw } = req.body || {};
     const updates = {};
+    let selectedPhysio = null;
 
     if (status !== undefined) {
       if (!ALLOWED_STATUSES.includes(status)) {
@@ -444,6 +479,7 @@ export async function updateBooking(req, res, next) {
           });
         }
         updates.physioId = physioId;
+        selectedPhysio = physio;
       }
     }
 
@@ -466,8 +502,13 @@ export async function updateBooking(req, res, next) {
      * Multi-session home plans are priced separately via createHomePlan and their
      * discount is preserved here if already present.
      */
-    if (amountPerSessionRaw !== undefined && amountPerSessionRaw !== null && amountPerSessionRaw !== '') {
-      const amountPerSession = Number(amountPerSessionRaw);
+    const physioChanged = updates.physioId !== undefined && String(updates.physioId || '') !== String(prev.physioId || '');
+    const shouldReprice = amountPerSessionRaw !== undefined && amountPerSessionRaw !== null && amountPerSessionRaw !== '';
+    if (shouldReprice || physioChanged) {
+      const amountPerSession =
+        shouldReprice
+          ? Number(amountPerSessionRaw)
+          : Number(prev.amountPerSession);
       if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
         return res.status(400).json({ message: 'amountPerSession must be a positive number' });
       }
@@ -477,13 +518,28 @@ export async function updateBooking(req, res, next) {
             'Cannot change the session price after payment is held or refunded. Refund and rebook if needed.',
         });
       }
+
+      const effectivePhysioId =
+        updates.physioId !== undefined ? updates.physioId : prev.physioId;
+      let effectivePhysio = selectedPhysio;
+      if (!effectivePhysio && effectivePhysioId) {
+        effectivePhysio = await Physiotherapist.findById(effectivePhysioId).select('coordinates').lean();
+      }
+      const patient = await User.findById(prev.userId).select('coordinates').lean();
+      const surchargeMeta = computeDistanceSurcharge(patient?.coordinates, effectivePhysio?.coordinates);
+
       const sessionsCount = Math.max(1, Number(prev.sessions) || 1);
       const discountPercent = Number(prev.discountPercent) > 0 ? Number(prev.discountPercent) : 0;
       const subtotal = amountPerSession * sessionsCount;
-      const totalAmount = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
+      const discounted = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
+      const totalAmount = Math.round((discounted + surchargeMeta.distanceSurchargeAmount + Number.EPSILON) * 100) / 100;
       const split = computeMarketplaceSplit(totalAmount);
 
       updates.amountPerSession = amountPerSession;
+      updates.distanceKmAtAssign = surchargeMeta.distanceKmAtAssign;
+      updates.distanceExtraKm = surchargeMeta.distanceExtraKm;
+      updates.distanceSurchargePerKm = surchargeMeta.distanceSurchargePerKm;
+      updates.distanceSurchargeAmount = surchargeMeta.distanceSurchargeAmount;
       updates.totalAmount = totalAmount;
       updates.amountPaise = Math.round(totalAmount * 100);
       updates['payment.amount'] = split.amount;
