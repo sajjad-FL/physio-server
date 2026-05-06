@@ -5,6 +5,7 @@ import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 import {
   deriveBookingPaymentSummary,
@@ -169,6 +170,16 @@ export async function respondToAssignment(req, res, next) {
             'Good news — your physiotherapist accepted the booking. Check the app for details.',
         });
       }
+      fireBookingPush(async () => {
+        await notifyExpoUsers([userIdForNotify], {
+          title: 'Booking accepted',
+          body: 'Your physiotherapist accepted the visit. Open the app for details.',
+          data: {
+            kind: 'assignment_accepted',
+            bookingId: String(id),
+          },
+        });
+      });
     } else {
       await Booking.findByIdAndUpdate(id, {
         physioId: null,
@@ -190,6 +201,16 @@ export async function respondToAssignment(req, res, next) {
             'We could not confirm the previous assignment. Our team will assign another physiotherapist shortly.',
         });
       }
+      fireBookingPush(async () => {
+        await notifyExpoUsers([userIdForNotify], {
+          title: 'Booking update',
+          body: 'Your physiotherapist was unavailable. We are assigning someone else.',
+          data: {
+            kind: 'assignment_rejected',
+            bookingId: String(id),
+          },
+        });
+      });
     }
 
     const out = await Booking.findById(id)

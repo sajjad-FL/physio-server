@@ -210,13 +210,8 @@ export async function registerPhysio(req, res, next) {
       : 'both';
     const serviceAreas = toAreas(body.areas);
     const minFee = Number(body.feeMin ?? body.fees);
-    const maxFeeRaw = body.feeMax != null ? String(body.feeMax).trim() : '';
-    const maxFeeNum = maxFeeRaw === '' ? NaN : Number(maxFeeRaw);
     const pricePerSession = Number.isFinite(minFee) ? minFee : 0;
-    let pricePerSessionMax = null;
-    if (Number.isFinite(maxFeeNum) && maxFeeNum > pricePerSession) {
-      pricePerSessionMax = maxFeeNum;
-    }
+    const pricePerSessionMax = null;
 
     const covLat = Number(body.lat);
     const covLng = Number(body.lng);

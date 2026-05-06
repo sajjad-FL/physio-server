@@ -7,6 +7,7 @@ import { validateIndianMobile } from '../utils/phoneIndia.js';
 import { normalizeRole } from '../utils/userRole.js';
 import { grantPasswordReset, consumePasswordResetGrant } from '../utils/passwordResetGrant.js';
 import { parseAddressPayload } from './profileController.js';
+import { normalizePatientGender } from '../utils/patientGender.js';
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
@@ -15,7 +16,6 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const OTP_PURPOSE_PASSWORD_RESET = 'password_reset';
 const OTP_PURPOSE_DEBUG_LOGIN = 'debug_login';
 const OTP_PURPOSE_SIGNUP = 'signup';
-const SIGNUP_GENDERS = new Set(['male', 'female', 'other', 'prefer_not_to_say']);
 const BCRYPT_ROUNDS = 10;
 const MIN_PASSWORD_LEN = 8;
 
@@ -97,7 +97,8 @@ export async function sendSignupOtp(req, res, next) {
 }
 
 /**
- * Patient signup: phone (verified via OTP) + password + name + DOB + location + gender.
+ * Patient signup: phone (verified via OTP) + password + name.
+ * Full profile (DOB, gender, location) may be sent in one step (web); if omitted, user completes profile later.
  */
 export async function registerPatient(req, res, next) {
   try {
@@ -142,28 +143,59 @@ export async function registerPatient(req, res, next) {
       return res.status(400).json({ message: 'Name is required (at least 2 characters)' });
     }
 
-    const gender = String(req.body?.gender || '').trim();
-    if (!SIGNUP_GENDERS.has(gender)) {
-      return res.status(400).json({ message: 'Please choose a valid gender' });
-    }
+    const dobRaw = req.body?.dob;
+    const addressParsed = parseAddressPayload(req.body);
 
-    const dob = parseRegisterDob(req.body?.dob);
-    if (!dob) {
+    const genderNormalized = normalizePatientGender(req.body?.gender);
+    const hasGenderInput = Boolean(genderNormalized);
+
+    const dobParsed = parseRegisterDob(dobRaw);
+    const hasValidDobInput = dobParsed != null;
+
+    const hasLocationInput =
+      addressParsed.provided && String(addressParsed.location || '').trim().length >= 2;
+
+    /**
+     * Quick signup: omit DOB, gender, and location (or send none that parse as valid).
+     * Full signup at register: must send all three together (avoids stray fields like `gender: "null"` + dob triggering half-baked validation).
+     */
+    const profileParts = [hasValidDobInput, hasGenderInput, hasLocationInput].filter(Boolean).length;
+    if (profileParts !== 0 && profileParts !== 3) {
       return res.status(400).json({
-        message: 'Valid date of birth is required (you must be at least 18, not in the future)',
+        message:
+          'Send date of birth, gender, and location all together on signup, or leave all three out and add them in your profile later.',
       });
     }
 
-    const addressParsed = parseAddressPayload(req.body);
-    if (addressParsed.error) {
-      return res.status(400).json({ message: addressParsed.error });
-    }
-    if (!addressParsed.provided || !String(addressParsed.location || '').trim()) {
-      return res.status(400).json({ message: 'City or area (location) is required' });
-    }
-    const locText = String(addressParsed.location || '').trim();
-    if (locText.length < 2) {
-      return res.status(400).json({ message: 'Location must be at least 2 characters' });
+    const wantsFullProfile = profileParts === 3;
+
+    let dob;
+    let locText;
+    let addressValue;
+    let coordinates;
+    let isProfileComplete;
+
+    if (wantsFullProfile) {
+      dob = dobParsed;
+      if (addressParsed.error) {
+        return res.status(400).json({ message: addressParsed.error });
+      }
+      if (!addressParsed.provided || !String(addressParsed.location || '').trim()) {
+        return res.status(400).json({ message: 'City or area (location) is required' });
+      }
+      locText = String(addressParsed.location || '').trim();
+      if (locText.length < 2) {
+        return res.status(400).json({ message: 'Location must be at least 2 characters' });
+      }
+      addressValue = addressParsed.value;
+      coordinates = addressParsed.coordinates;
+      isProfileComplete = true;
+    } else {
+      dob = null;
+      locText = '';
+      addressValue = { text: '', lat: null, lng: null };
+      coordinates = null;
+      isProfileComplete = false;
     }
 
     const existing = await User.findOne({ phone: pv.normalized }).select('_id').lean();
@@ -172,19 +204,20 @@ export async function registerPatient(req, res, next) {
     }
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const genderToSave = wantsFullProfile ? genderNormalized : 'prefer_not_to_say';
     const user = await User.create({
       phone: pv.normalized,
       name,
       email: '',
       dob,
-      gender,
-      address: addressParsed.value,
-      location: addressParsed.location || '',
-      coordinates: addressParsed.coordinates,
+      gender: genderToSave,
+      address: addressValue,
+      location: locText,
+      coordinates,
       passwordHash,
       hasPasswordLogin: true,
       isVerified: true,
-      isProfileComplete: true,
+      isProfileComplete,
       role: 'user',
     });
 

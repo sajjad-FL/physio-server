@@ -17,6 +17,14 @@ const addressSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const expoPushTokenSchema = new mongoose.Schema(
+  {
+    token: { type: String, trim: true, required: true },
+    updatedAt: { type: Date, default: () => new Date() },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, trim: true },
@@ -55,6 +63,7 @@ const userSchema = new mongoose.Schema(
     },
     /** Public path served under /uploads, e.g. /uploads/avatars/… */
     avatarUrl: { type: String, trim: true, default: '' },
+    expoPushTokens: { type: [expoPushTokenSchema], default: [] },
   },
   { timestamps: true }
 );

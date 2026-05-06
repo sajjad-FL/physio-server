@@ -154,7 +154,7 @@ function toNearbyDto(p, distanceKmVal) {
   };
 }
 
-export async function listNearbyPhysios(req, res, next) {
+export async function listAvailablePhysios(req, res, next) {
   try {
     const coords = parseCoordQuery(req.query);
     if (!coords) {

@@ -14,6 +14,8 @@ import { uploadOnboardingFiles } from '../config/upload.js';
 const router = Router();
 
 router.post('/register', registerPatient);
+// Backward compatibility for older/mobile clients expecting /auth/send-otp
+router.post('/send-otp', sendSignupOtp);
 router.post('/signup-otp', sendSignupOtp);
 router.post('/login', loginWithPassword);
 router.post('/debug-login-otp', debugSendLoginOtp);

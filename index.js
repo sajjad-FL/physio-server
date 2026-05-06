@@ -69,6 +69,8 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+// Backward compatibility for clients that call /auth/* without /api prefix
+app.use('/auth', authRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/slots', slotRoutes);
 app.use('/api/payment', paymentRoutes);

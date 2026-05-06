@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   createPhysio,
   listPhysios,
-  listNearbyPhysios,
+  listAvailablePhysios,
   getPublicPhysioProfile,
 } from '../controllers/physioController.js';
 import { listPhysioReviews } from '../controllers/reviewController.js';
@@ -10,7 +10,7 @@ import { requireAdmin } from '../middleware/adminMiddleware.js';
 
 const router = Router();
 
-router.get('/nearby', listNearbyPhysios);
+router.get('/nearby', listAvailablePhysios);
 router.get('/:id/reviews', listPhysioReviews);
 router.get('/:id', getPublicPhysioProfile);
 router.post('/', requireAdmin, createPhysio);

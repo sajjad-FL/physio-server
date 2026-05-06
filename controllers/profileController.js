@@ -6,8 +6,17 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import { uploadsRoot } from '../config/upload.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
 import { normalizeRole } from '../utils/userRole.js';
+import { normalizePatientGender } from '../utils/patientGender.js';
 
-const GENDERS = new Set(['male', 'female', 'other', 'prefer_not_to_say']);
+/** Patients need name, DOB, gender, and a non-trivial address/location before platform features unlock. */
+function isPatientProfileCompleteDoc(user) {
+  const nameOk = String(user?.name || '').trim().length >= 2;
+  const genderOk = Boolean(normalizePatientGender(user?.gender));
+  const dobOk = user?.dob instanceof Date && !Number.isNaN(user.dob.getTime());
+  const addr = String(user?.address?.text ?? user?.location ?? '').trim();
+  const addressOk = addr.length >= 2;
+  return Boolean(nameOk && genderOk && dobOk && addressOk);
+}
 
 function resolveStoredUploadPath(avatarUrl) {
   if (!avatarUrl || typeof avatarUrl !== 'string' || !avatarUrl.startsWith('/uploads/')) return null;
@@ -147,12 +156,11 @@ export async function getProfile(req, res, next) {
           await Physiotherapist.findByIdAndUpdate(user.physioId, { $set: { avatar: user.avatarUrl } });
         }
         const lo = Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0;
-        const hi = physio.pricePerSessionMax != null ? Number(physio.pricePerSessionMax) : NaN;
         physioProfile = {
           specialization: physio.specialization || '',
           experience: Number.isFinite(physio.experience) ? physio.experience : 0,
           fees: lo,
-          feesMax: Number.isFinite(hi) && hi > lo ? hi : null,
+          feesMax: null,
         };
         physioVerification = {
           status: physio.verificationStatus || 'pending',
@@ -188,12 +196,11 @@ export async function patchProfile(req, res, next) {
     const name = String(req.body?.name ?? '').trim();
     const emailParsed = parseEmail(req.body?.email);
     const dobRaw = req.body?.dob;
-    const gender = String(req.body?.gender ?? '').trim();
+    const genderNormalized = normalizePatientGender(req.body?.gender);
     const addressParsed = parseAddressPayload(req.body);
     const specializationRaw = req.body?.specialization;
     const experienceRaw = req.body?.experience;
     const feesRaw = req.body?.fees ?? req.body?.pricePerSession;
-    const feesMaxRaw = req.body?.feesMax ?? req.body?.pricePerSessionMax;
 
     if (!name) {
       return res.status(400).json({ message: 'Name is required' });
@@ -208,7 +215,7 @@ export async function patchProfile(req, res, next) {
       return res.status(400).json({ message: 'Valid date of birth is required (age 13–120, not in the future)' });
     }
 
-    if (!GENDERS.has(gender)) {
+    if (!genderNormalized) {
       return res.status(400).json({ message: 'Please choose a valid gender' });
     }
 
@@ -224,13 +231,14 @@ export async function patchProfile(req, res, next) {
       user.email = emailParsed;
     }
     user.dob = dob;
-    user.gender = gender;
+    user.gender = genderNormalized;
     if (addressParsed.provided) {
       user.address = addressParsed.value;
       user.location = addressParsed.location || '';
       user.coordinates = addressParsed.coordinates;
     }
-    user.isProfileComplete = true;
+    const roleAfter = normalizeRole(user);
+    user.isProfileComplete = roleAfter === 'user' ? isPatientProfileCompleteDoc(user) : true;
     await user.save();
 
     let physioResponse = null;
@@ -241,7 +249,7 @@ export async function patchProfile(req, res, next) {
         physio.name = name;
         physio.email = user.email || '';
         physio.dob = dob;
-        physio.gender = gender;
+        physio.gender = genderNormalized;
 
         if (addressParsed.provided) {
           physio.address = addressParsed.value?.text || '';
@@ -274,34 +282,17 @@ export async function patchProfile(req, res, next) {
               return res.status(400).json({ message: 'Fees must be a valid non-negative amount' });
             }
             physio.pricePerSession = fees;
-          }
-
-          if (feesMaxRaw !== undefined) {
-            if (feesMaxRaw === null || feesMaxRaw === '') {
-              physio.pricePerSessionMax = null;
-            } else {
-              const fm = Number(feesMaxRaw);
-              if (!Number.isFinite(fm) || fm < 0) {
-                return res.status(400).json({ message: 'Upper fee must be a valid non-negative amount' });
-              }
-              const lo = Number(physio.pricePerSession);
-              if (Number.isFinite(fm) && Number.isFinite(lo) && fm > lo) {
-                physio.pricePerSessionMax = fm;
-              } else {
-                physio.pricePerSessionMax = null;
-              }
-            }
+            physio.pricePerSessionMax = null;
           }
         }
 
         await physio.save();
         const loOut = Number.isFinite(physio.pricePerSession) ? physio.pricePerSession : 0;
-        const hiOut = physio.pricePerSessionMax != null ? Number(physio.pricePerSessionMax) : NaN;
         physioResponse = {
           specialization: physio.specialization || '',
           experience: Number.isFinite(physio.experience) ? physio.experience : 0,
           fees: loOut,
-          feesMax: Number.isFinite(hiOut) && hiOut > loOut ? hiOut : null,
+          feesMax: null,
         };
       }
     }
@@ -312,13 +303,42 @@ export async function patchProfile(req, res, next) {
       email: user.email || '',
       dob: toIsoDate(user.dob),
       gender: user.gender,
-      isProfileComplete: true,
+      isProfileComplete: user.isProfileComplete === true,
       phone: user.phone,
       role,
       avatarUrl: user.avatarUrl || '',
       address: profileAddress(user),
       physio: physioResponse,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const MAX_EXPO_PUSH_TOKENS_PER_USER = 10;
+
+/** Mobile: register Expo push token for authenticated user (patient or physio). */
+export async function registerExpoPushToken(req, res, next) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const token = String(req.body?.token ?? '').trim();
+    if (!token.startsWith('ExponentPushToken[')) {
+      return res.status(400).json({ message: 'Invalid Expo push token' });
+    }
+
+    const user = await User.findById(userId).select('expoPushTokens');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const now = new Date();
+    const existing = Array.isArray(user.expoPushTokens) ? [...user.expoPushTokens] : [];
+    const withoutDup = existing.filter((e) => e?.token !== token);
+    withoutDup.unshift({ token, updatedAt: now });
+    user.expoPushTokens = withoutDup.slice(0, MAX_EXPO_PUSH_TOKENS_PER_USER);
+    await user.save();
+
+    return res.json({ ok: true });
   } catch (err) {
     next(err);
   }

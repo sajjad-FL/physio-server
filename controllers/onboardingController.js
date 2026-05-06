@@ -178,20 +178,9 @@ export async function patchOnboarding(req, res, next) {
       const minRaw = practice.feeMin !== undefined ? practice.feeMin : practice.fees;
       if (minRaw != null && String(minRaw).trim() !== '') {
         const min = Number(minRaw);
-        if (Number.isFinite(min) && min > 0) $set.pricePerSession = min;
-      }
-      if (practice.feeMax !== undefined) {
-        const maxStr = practice.feeMax == null ? '' : String(practice.feeMax).trim();
-        const baseMin = Number.isFinite(Number(minRaw)) && Number(minRaw) > 0 ? Number(minRaw) : Number(existingPatch.pricePerSession);
-        if (maxStr === '') {
+        if (Number.isFinite(min) && min > 0) {
+          $set.pricePerSession = min;
           $set.pricePerSessionMax = null;
-        } else {
-          const max = Number(maxStr);
-          if (Number.isFinite(max) && Number.isFinite(baseMin) && max > baseMin) {
-            $set.pricePerSessionMax = max;
-          } else {
-            $set.pricePerSessionMax = null;
-          }
         }
       }
     }

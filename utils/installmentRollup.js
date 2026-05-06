@@ -5,6 +5,26 @@ function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
 
+/**
+ * One session line for installment math: physio base + per-visit distance (home),
+ * or an inferred average from total ÷ sessions when base is unset.
+ */
+export function bookingLinePerSession(booking) {
+  const base = Number(booking?.amountPerSession || 0);
+  const travel = roundMoney2(Math.max(0, Number(booking?.distanceSurchargeAmount) || 0));
+  if (base > 0) {
+    return roundMoney2(base + travel);
+  }
+  const sessionsCount = Array.isArray(booking?.schedule) && booking.schedule.length > 0
+    ? booking.schedule.length
+    : 1;
+  const totalAmount = roundMoney2(Number(booking?.totalAmount || booking?.payment?.amount || 0));
+  if (sessionsCount > 0 && totalAmount > 0) {
+    return roundMoney2(totalAmount / sessionsCount);
+  }
+  return 0;
+}
+
 function toBookingDoc(bookingOrId) {
   if (!bookingOrId) return null;
   if (typeof bookingOrId === 'string') return Booking.findById(bookingOrId);
@@ -65,9 +85,7 @@ export async function recomputeBookingPaymentRollup(bookingOrId) {
   const sessionsCount = Array.isArray(booking.schedule) && booking.schedule.length > 0
     ? booking.schedule.length
     : 1;
-  const perSession = Number(booking.amountPerSession || 0) > 0
-    ? Number(booking.amountPerSession)
-    : (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
+  const perSession = bookingLinePerSession(booking) || (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
   const coveredSessions = perSession > 0
     ? Math.min(sessionsCount, Math.floor((totalPaid + 0.009) / perSession))
     : (totalPaid >= totalAmount ? sessionsCount : 0);
@@ -97,9 +115,9 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const sessionsCount = Array.isArray(booking?.schedule) && booking.schedule.length > 0
     ? booking.schedule.length
     : 1;
-  const perSession = Number(booking?.amountPerSession || 0) > 0
-    ? Number(booking.amountPerSession)
-    : (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
+  const perSession =
+    bookingLinePerSession(booking) ||
+    (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
   const coveredSessions = perSession > 0
     ? Math.min(sessionsCount, Math.floor((totalPaid + 0.009) / perSession))
     : (totalPaid >= totalAmount ? sessionsCount : 0);

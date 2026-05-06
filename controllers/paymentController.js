@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import Razorpay from 'razorpay';
 import Booking from '../models/Booking.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
@@ -8,22 +7,11 @@ import {
   computeMarketplaceSplit,
   creditPhysioWalletOnline,
 } from '../utils/marketplacePayment.js';
-
-function getRazorpayConfig() {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) {
-    const err = new Error(
-      'Razorpay keys are not configured (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)'
-    );
-    err.statusCode = 500;
-    throw err;
-  }
-
-  const amountPaise = Number(process.env.RAZORPAY_AMOUNT_PAISE) || 50000;
-
-  return { keyId, keySecret, amountPaise };
-}
+import {
+  getRazorpayConfig,
+  assertValidRazorpayPaymentSignature,
+  assertPaymentCapturedForOrder,
+} from '../utils/razorpayClient.js';
 
 export async function createOrder(req, res, next) {
   try {
@@ -96,15 +84,26 @@ export async function verifyPayment(req, res, next) {
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (booking.userId.toString() !== userId) return res.status(403).json({ message: 'Forbidden' });
 
-    const { keySecret, amountPaise } = getRazorpayConfig();
+    const { keyId, keySecret, amountPaise } = getRazorpayConfig();
 
-    const expected = crypto
-      .createHmac('sha256', keySecret)
-      .update(razorpay_order_id + '|' + razorpay_payment_id)
-      .digest('hex');
+    let verifiedOrderId;
+    let verifiedPaymentId;
+    try {
+      ;({ orderId: verifiedOrderId, paymentId: verifiedPaymentId } = assertValidRazorpayPaymentSignature(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+        keySecret,
+      ));
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
 
-    if (expected !== razorpay_signature) {
-      return res.status(400).json({ message: 'Invalid payment signature' });
+    const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    try {
+      await assertPaymentCapturedForOrder(razorpay, verifiedPaymentId, verifiedOrderId);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
     }
 
     if (booking.payment?.status === 'paid') {
@@ -115,8 +114,8 @@ export async function verifyPayment(req, res, next) {
     const split = computeMarketplaceSplit(rupees > 0 ? rupees : amountPaise / 100);
 
     booking.paymentStatus = 'held';
-    booking.razorpayOrderId = razorpay_order_id;
-    booking.razorpayPaymentId = razorpay_payment_id;
+    booking.razorpayOrderId = verifiedOrderId;
+    booking.razorpayPaymentId = verifiedPaymentId;
     booking.heldAt = new Date();
     booking.paidAt = booking.paidAt || new Date();
     if (booking.physioId) {
