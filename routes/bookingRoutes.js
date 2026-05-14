@@ -13,7 +13,12 @@ import {
   updateBooking,
   getBookingById,
 } from '../controllers/bookingController.js';
-import { startOnlineCheckout, completeOnlineCheckout } from '../controllers/onlineCheckoutController.js';
+import {
+  startOnlineCheckout,
+  completeOnlineCheckout,
+  renderHostedOnlineCheckoutPage,
+  completeHostedOnlineCheckout,
+} from '../controllers/onlineCheckoutController.js';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/adminMiddleware.js';
 import { authenticateJwt } from '../middleware/authenticateJwt.js';
@@ -27,6 +32,8 @@ const router = Router();
 router.post('/', requireAuth, createBooking);
 router.post('/online-checkout/start', requireAuth, startOnlineCheckout);
 router.post('/online-checkout/complete', requireAuth, completeOnlineCheckout);
+router.get('/online-checkout/hosted/:sessionId', renderHostedOnlineCheckoutPage);
+router.post('/online-checkout/complete-hosted', completeHostedOnlineCheckout);
 router.post('/request-home', requireAuth, requestHomeBooking);
 router.get('/mine', requireAuth, listMyBookings);
 router.get('/my', requireAuth, listMyBookings);
