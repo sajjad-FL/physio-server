@@ -30,9 +30,30 @@ export const uploadPhysioDocs = multer({
   limits: { fileSize: MAX_UPLOAD_BYTES },
 });
 
+/** Field names used by physio registration / onboarding uploads (multer .fields). */
+const ONBOARDING_FILE_FIELDS = new Set([
+  'avatar',
+  'certificate',
+  'idProof',
+  'id_proof',
+  'registrationCertificate',
+  'selfieWithId',
+  'internshipCertificate',
+  'councilRegistrationCertificate',
+]);
+
 function onboardingFileFilter(_req, file, cb) {
-  const ok = /^image\//.test(file.mimetype) || file.mimetype === 'application/pdf';
-  cb(ok ? null : new Error('Only images and PDF files are allowed'), ok);
+  const mime = String(file.mimetype || '').toLowerCase();
+  const orig = String(file.originalname || '').toLowerCase();
+  const extLooksOk = /\.(pdf|jpe?g|jpeg|png|gif|webp|heic|heif|bmp)$/i.test(orig);
+  const okMime = /^image\//.test(mime) || mime === 'application/pdf';
+  const looseMime = mime === '' || mime === 'application/octet-stream' || mime === 'binary/octet-stream';
+  const okFallback = looseMime && extLooksOk;
+  const knownField = ONBOARDING_FILE_FIELDS.has(String(file.fieldname || ''));
+  const okOctetOnKnownField = knownField && looseMime;
+  const ok = okMime || okFallback || okOctetOnKnownField;
+  // Multer: never pass a truthy Error here — that aborts the whole multipart. Use (null, false) to skip one file.
+  cb(null, ok);
 }
 
 export const uploadOnboardingFiles = multer({
