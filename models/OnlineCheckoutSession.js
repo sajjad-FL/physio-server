@@ -19,6 +19,9 @@ const onlineCheckoutSessionSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     razorpayOrderId: { type: String, required: true, trim: true },
     amountPaise: { type: Number, required: true },
+    grossAmountPaise: { type: Number, default: null },
+    walletDiscountPaise: { type: Number, default: 0, min: 0 },
+    useWalletCredit: { type: Boolean, default: false },
     /** One-time token for Expo Go / no-WebView flows (hosted HTML checkout). */
     hostedToken: { type: String, default: '', trim: true },
     draft: { type: draftSchema, required: true },

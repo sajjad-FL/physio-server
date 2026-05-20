@@ -3,6 +3,9 @@ import Razorpay from 'razorpay';
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
 import Payment from '../models/Payment.js';
+import User from '../models/User.js';
+import { applyWalletCredit } from '../utils/walletCheckout.js';
+import { deductWalletForInstallment } from '../utils/walletLedger.js';
 import { recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
 import {
   postOnlineInstallmentCredit,
@@ -187,6 +190,7 @@ export async function createInstallmentOrder(req, res, next) {
     const userId = req.user?.id;
     const bookingId = req.body?.bookingId;
     const amount = roundMoney2(Number(req.body?.amount));
+    const useWalletCredit = req.body?.useWalletCredit === true;
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
     if (!mongoose.isValidObjectId(bookingId)) {
       return res.status(400).json({ message: 'Invalid booking id' });
@@ -217,9 +221,18 @@ export async function createInstallmentOrder(req, res, next) {
         .json({ message: `Amount exceeds outstanding (Rs.${outstanding.toFixed(2)})` });
     }
 
+    const user = await User.findById(userId).select('role walletBalance').lean();
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const pricing = applyWalletCredit({
+      user,
+      grossRupees: amount,
+      useWalletCredit,
+    });
+
     const { keyId, keySecret } = getRazorpayConfig();
     const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
-    const amountPaise = Math.round(amount * 100);
+    const amountPaise = pricing.payablePaise;
 
     const order = await razorpay.orders.create({
       amount: amountPaise,
@@ -236,6 +249,10 @@ export async function createInstallmentOrder(req, res, next) {
       mode: 'online',
       status: 'pending',
       razorpayOrderId: order.id,
+      meta: {
+        walletDiscount: pricing.walletDeduction,
+        walletDeducted: false,
+      },
     });
 
     return res.status(201).json({
@@ -244,6 +261,9 @@ export async function createInstallmentOrder(req, res, next) {
       amount: order.amount,
       currency: order.currency,
       keyId,
+      grossAmount: pricing.grossRupees,
+      walletDiscount: pricing.walletDeduction,
+      payableAmount: pricing.payableRupees,
     });
   } catch (err) {
     next(err);
@@ -296,6 +316,16 @@ export async function verifyInstallmentOrder(req, res, next) {
 
     const booking = await Booking.findById(payment.bookingId);
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
+
+    const walletDeduction = roundMoney2(Number(payment.meta?.walletDiscount) || 0);
+    if (walletDeduction > 0 && !payment.meta?.walletDeducted) {
+      await deductWalletForInstallment({
+        userId,
+        booking,
+        payment,
+        walletDeduction,
+      });
+    }
 
     payment.razorpayPaymentId = razorpay_payment_id;
     payment.status = 'verified';

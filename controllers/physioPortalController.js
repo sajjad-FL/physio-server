@@ -7,6 +7,7 @@ import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
+import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
 import {
   deriveBookingPaymentSummary,
   computeUnlockedSessions,
@@ -425,6 +426,12 @@ export async function completeSession(req, res, next) {
 
     await booking.save();
 
+    if (booking.status === 'completed') {
+      processReferralRewardOnBookingCompleted(booking).catch((e) =>
+        console.warn('[referral] completeSession:', e?.message || e),
+      );
+    }
+
     const out = await Booking.findById(booking._id)
       .populate('userId', 'name phone location')
       .populate('physioId', 'name specialization location')
@@ -472,6 +479,12 @@ export async function markSessionNoShow(req, res, next) {
     entry.completedBy = null;
     rollupBookingSessionStatus(booking);
     await booking.save();
+
+    if (booking.status === 'completed') {
+      processReferralRewardOnBookingCompleted(booking).catch((e) =>
+        console.warn('[referral] markSessionNoShow:', e?.message || e),
+      );
+    }
 
     const out = await Booking.findById(booking._id)
       .populate('userId', 'name phone location')

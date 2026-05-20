@@ -4,6 +4,15 @@ import {
   QUALIFICATION_DECLARATION_MAX_LENGTH,
   resolveDeclarationText,
 } from '../constants/qualificationDeclaration.js';
+import {
+  REFERRAL_AMOUNT_MAX,
+  REFERRAL_AMOUNT_MIN,
+  REFERRAL_REWARD_AMOUNT_MIN,
+  getReferralRewardAmount,
+  getReferralSignupBonusAmount,
+  normalizeReferralRewardAmountInput,
+  normalizeReferralSignupBonusAmountInput,
+} from '../utils/referralConfig.js';
 
 const SINGLETON_ID = 'singleton';
 
@@ -50,6 +59,8 @@ export async function getPublicPhysioNda(req, res, next) {
 export async function getAdminPlatformSettings(req, res, next) {
   try {
     const doc = await ensureSingletonLean();
+    const referralRewardAmount = await getReferralRewardAmount();
+    const referralSignupBonusAmount = await getReferralSignupBonusAmount();
     return res.json({
       physioNdaTemplateUrl: doc?.physioNdaTemplateUrl || '',
       physioNdaOriginalName: doc?.physioNdaOriginalName || '',
@@ -57,44 +68,90 @@ export async function getAdminPlatformSettings(req, res, next) {
       qualificationDeclarationText: String(doc?.qualificationDeclarationText ?? '').trim(),
       qualificationDeclarationResolved: resolveDeclarationText(doc),
       qualificationDeclarationUpdatedAt: doc?.qualificationDeclarationUpdatedAt || null,
+      referralRewardAmount,
+      referralRewardAmountUpdatedAt: doc?.referralRewardAmountUpdatedAt || null,
+      referralSignupBonusAmount,
+      referralSignupBonusAmountUpdatedAt: doc?.referralSignupBonusAmountUpdatedAt || null,
     });
   } catch (err) {
     next(err);
   }
 }
 
-/** Admin: update stored declaration (empty string = use built-in default on read). */
+/** Admin: update declaration and/or referral reward amount. */
 export async function patchAdminPlatformSettings(req, res, next) {
   try {
-    const { qualificationDeclarationText } = req.body || {};
-    if (qualificationDeclarationText === undefined || qualificationDeclarationText === null) {
+    const { qualificationDeclarationText, referralRewardAmount, referralSignupBonusAmount } =
+      req.body || {};
+    const hasDeclaration = qualificationDeclarationText !== undefined && qualificationDeclarationText !== null;
+    const hasReferralAmount = referralRewardAmount !== undefined && referralRewardAmount !== null;
+    const hasSignupBonus =
+      referralSignupBonusAmount !== undefined && referralSignupBonusAmount !== null;
+
+    if (!hasDeclaration && !hasReferralAmount && !hasSignupBonus) {
       return res.status(400).json({
-        message: 'Send qualificationDeclarationText (string). Use empty string to use the default declaration.',
+        message:
+          'Send qualificationDeclarationText, referralRewardAmount, and/or referralSignupBonusAmount.',
       });
     }
-    const raw = String(qualificationDeclarationText).trim();
-    if (raw.length > QUALIFICATION_DECLARATION_MAX_LENGTH) {
-      return res.status(400).json({
-        message: `Declaration must be at most ${QUALIFICATION_DECLARATION_MAX_LENGTH} characters`,
-      });
+
+    const $set = {};
+    const messages = [];
+
+    if (hasDeclaration) {
+      const raw = String(qualificationDeclarationText).trim();
+      if (raw.length > QUALIFICATION_DECLARATION_MAX_LENGTH) {
+        return res.status(400).json({
+          message: `Declaration must be at most ${QUALIFICATION_DECLARATION_MAX_LENGTH} characters`,
+        });
+      }
+      $set.qualificationDeclarationText = raw;
+      $set.qualificationDeclarationUpdatedAt = new Date();
+      messages.push('Declaration updated');
+    }
+
+    if (hasReferralAmount) {
+      const amount = normalizeReferralRewardAmountInput(referralRewardAmount);
+      if (amount == null) {
+        return res.status(400).json({
+          message: `referralRewardAmount must be an integer from ${REFERRAL_REWARD_AMOUNT_MIN} to ${REFERRAL_AMOUNT_MAX}`,
+        });
+      }
+      $set.referralRewardAmount = amount;
+      $set.referralRewardAmountUpdatedAt = new Date();
+      messages.push('Referrer reward updated');
+    }
+
+    if (hasSignupBonus) {
+      const bonus = normalizeReferralSignupBonusAmountInput(referralSignupBonusAmount);
+      if (bonus == null) {
+        return res.status(400).json({
+          message: `referralSignupBonusAmount must be an integer from ${REFERRAL_AMOUNT_MIN} to ${REFERRAL_AMOUNT_MAX} (0 disables friend signup bonus)`,
+        });
+      }
+      $set.referralSignupBonusAmount = bonus;
+      $set.referralSignupBonusAmountUpdatedAt = new Date();
+      messages.push('Friend signup bonus updated');
     }
 
     const updated = await PlatformSettings.findByIdAndUpdate(
       SINGLETON_ID,
-      {
-        $set: {
-          qualificationDeclarationText: raw,
-          qualificationDeclarationUpdatedAt: new Date(),
-        },
-      },
+      { $set },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     ).lean();
 
+    const resolvedReward = await getReferralRewardAmount();
+    const resolvedSignupBonus = await getReferralSignupBonusAmount();
+
     return res.json({
-      message: 'Declaration updated',
+      message: messages.join('. ') || 'Settings updated',
       qualificationDeclarationText: String(updated?.qualificationDeclarationText ?? '').trim(),
       qualificationDeclarationResolved: resolveDeclarationText(updated),
       qualificationDeclarationUpdatedAt: updated?.qualificationDeclarationUpdatedAt || null,
+      referralRewardAmount: resolvedReward,
+      referralRewardAmountUpdatedAt: updated?.referralRewardAmountUpdatedAt || null,
+      referralSignupBonusAmount: resolvedSignupBonus,
+      referralSignupBonusAmountUpdatedAt: updated?.referralSignupBonusAmountUpdatedAt || null,
     });
   } catch (err) {
     next(err);

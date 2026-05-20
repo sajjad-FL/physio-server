@@ -22,6 +22,8 @@ import {
   assertValidRazorpayPaymentSignature,
   assertPaymentCapturedForOrder,
 } from '../utils/razorpayClient.js';
+import { applyWalletCredit } from '../utils/walletCheckout.js';
+import { deductWalletForBooking } from '../utils/walletLedger.js';
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'This physiotherapist already has another booking in that time slot';
@@ -227,7 +229,13 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
   }
   await User.findByIdAndUpdate(userId, userUpdate, { new: true });
 
-  const totalAmount = roundMoney2(locked.amountPaise / 100);
+  const grossAmountPaise =
+    Number.isFinite(Number(locked.grossAmountPaise)) && Number(locked.grossAmountPaise) > 0
+      ? Number(locked.grossAmountPaise)
+      : Number(locked.amountPaise);
+  const walletDiscountPaise = Math.max(0, Number(locked.walletDiscountPaise) || 0);
+  const totalAmount = roundMoney2(grossAmountPaise / 100);
+  const walletDiscount = roundMoney2(walletDiscountPaise / 100);
   const split = computeMarketplaceSplit(totalAmount);
 
   let booking;
@@ -244,6 +252,8 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
       sessions: 1,
       amountPaise: locked.amountPaise,
       totalAmount,
+      walletDiscount,
+      walletDeducted: false,
       consentAccepted: true,
       razorpayOrderId: verifiedOrderId,
       razorpayPaymentId: verifiedPaymentId,
@@ -270,6 +280,7 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
     throw e;
   }
 
+  await deductWalletForBooking(booking, userId);
   await creditPhysioWalletOnline(booking);
 
   await OnlineCheckoutSession.updateOne({ _id: locked._id }, { $set: { status: 'completed' } });
@@ -321,12 +332,18 @@ export async function startOnlineCheckout(req, res, next) {
 
     const { name, location, issue, date, coords, selectedPhysio, normalizedTimeSlot, user } = v.value;
 
-    const totalAmount = onlineCheckoutGrossRupees(selectedPhysio);
-    const amountPaise = Math.round(totalAmount * 100);
+    const grossRupees = onlineCheckoutGrossRupees(selectedPhysio);
+    const pricing = applyWalletCredit({
+      user,
+      grossRupees,
+      useWalletCredit: req.body?.useWalletCredit === true,
+    });
 
     const { keyId, keySecret, amountPaise: envFallback } = getRazorpayConfig();
     const payableAmountPaise =
-      Number.isFinite(amountPaise) && amountPaise > 0 ? amountPaise : envFallback;
+      pricing.payablePaise > 0 ? pricing.payablePaise : envFallback;
+    const grossAmountPaise = Math.round(pricing.grossRupees * 100);
+    const walletDiscountPaise = Math.round(pricing.walletDeduction * 100);
 
     const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     const order = await razorpay.orders.create({
@@ -341,6 +358,9 @@ export async function startOnlineCheckout(req, res, next) {
       userId,
       razorpayOrderId: order.id,
       amountPaise: order.amount,
+      grossAmountPaise,
+      walletDiscountPaise,
+      useWalletCredit: req.body?.useWalletCredit === true,
       hostedToken,
       draft: {
         name,
@@ -364,6 +384,9 @@ export async function startOnlineCheckout(req, res, next) {
       currency: order.currency,
       keyId,
       hostedPayUrl,
+      grossAmount: pricing.grossRupees,
+      walletDiscount: pricing.walletDeduction,
+      payableAmount: pricing.payableRupees,
       /** Patient (logged-in user) contact for Razorpay checkout — from DB, not client state. */
       prefill: {
         name: String(name || user?.name || '').trim(),

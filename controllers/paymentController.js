@@ -1,5 +1,8 @@
 import Razorpay from 'razorpay';
 import Booking from '../models/Booking.js';
+import User from '../models/User.js';
+import { applyWalletCredit } from '../utils/walletCheckout.js';
+import { deductWalletForBooking } from '../utils/walletLedger.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
@@ -16,7 +19,7 @@ import {
 export async function createOrder(req, res, next) {
   try {
     const userId = req.user?.id;
-    const { bookingId } = req.body || {};
+    const { bookingId, useWalletCredit } = req.body || {};
 
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
     if (!bookingId) return res.status(400).json({ message: 'bookingId is required' });
@@ -24,6 +27,9 @@ export async function createOrder(req, res, next) {
     const booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (booking.userId.toString() !== userId) return res.status(403).json({ message: 'Forbidden' });
+
+    const user = await User.findById(userId).select('role walletBalance').lean();
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
     if (booking.paymentStatus === 'held' || booking.paymentStatus === 'released') {
       return res.status(400).json({ message: 'Booking payment is already settled' });
@@ -35,12 +41,17 @@ export async function createOrder(req, res, next) {
       return res.status(400).json({ message: 'This plan uses offline payment' });
     }
 
-    const { keyId, keySecret, amountPaise } = getRazorpayConfig();
+    const grossRupees = bookingAmountRupees(booking);
+    const pricing = applyWalletCredit({
+      user,
+      grossRupees: grossRupees > 0 ? grossRupees : 0,
+      useWalletCredit: useWalletCredit === true,
+    });
+
+    const { keyId, keySecret, amountPaise: envFallback } = getRazorpayConfig();
     const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     const payableAmountPaise =
-      Number.isFinite(Number(booking.amountPaise)) && Number(booking.amountPaise) > 0
-        ? Number(booking.amountPaise)
-        : amountPaise;
+      pricing.payablePaise > 0 ? pricing.payablePaise : envFallback;
 
     const order = await razorpay.orders.create({
       amount: payableAmountPaise,
@@ -51,6 +62,11 @@ export async function createOrder(req, res, next) {
 
     booking.razorpayOrderId = order.id;
     booking.amountPaise = order.amount;
+    booking.walletDiscount = pricing.walletDeduction;
+    booking.walletDeducted = false;
+    if (pricing.grossRupees > 0 && !booking.totalAmount) {
+      booking.totalAmount = pricing.grossRupees;
+    }
     await booking.save();
 
     return res.json({
@@ -58,6 +74,9 @@ export async function createOrder(req, res, next) {
       amount: order.amount,
       currency: order.currency,
       keyId,
+      grossAmount: pricing.grossRupees,
+      walletDiscount: pricing.walletDeduction,
+      payableAmount: pricing.payableRupees,
     });
   } catch (err) {
     next(err);
@@ -131,6 +150,7 @@ export async function verifyPayment(req, res, next) {
     };
     await booking.save();
 
+    await deductWalletForBooking(booking, userId);
     await creditPhysioWalletOnline(booking);
 
     await booking.populate('userId', 'phone location coordinates name');

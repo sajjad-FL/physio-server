@@ -23,6 +23,7 @@ import {
   notifyExpoUsers,
   findUserIdForPhysioProfile,
 } from '../utils/expoPush.js';
+import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -625,6 +626,15 @@ export async function updateBooking(req, res, next) {
           },
         });
       });
+    }
+
+    if (updates.status === 'completed' && prev.status !== 'completed') {
+      const bookingDoc = await Booking.findById(id);
+      if (bookingDoc) {
+        processReferralRewardOnBookingCompleted(bookingDoc).catch((e) =>
+          console.warn('[referral] updateBooking:', e?.message || e),
+        );
+      }
     }
 
     return res.json(booking);

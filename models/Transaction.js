@@ -1,8 +1,11 @@
 import mongoose from 'mongoose';
 
+const PHYSIO_LEDGER_TYPES = ['online', 'offline', 'settlement', 'withdrawal'];
+const PATIENT_PLATFORM_TYPES = ['referral_credit', 'referral_signup_bonus', 'wallet_discount'];
+
 /**
  * Ledger lines — balances are derived: sum(credits) − sum(debits) on posted rows.
- * Types: online | offline | settlement (refunds use type online/offline with direction debit + meta.reason).
+ * Types: online | offline | settlement | withdrawal | referral_credit | referral_signup_bonus | wallet_discount
  */
 const transactionSchema = new mongoose.Schema(
   {
@@ -12,15 +15,21 @@ const transactionSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     physioId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Physiotherapist',
-      required: true,
+      default: null,
       index: true,
     },
     type: {
       type: String,
-      enum: ['online', 'offline', 'settlement', 'withdrawal'],
+      enum: [...PHYSIO_LEDGER_TYPES, ...PATIENT_PLATFORM_TYPES],
       required: true,
     },
     /** INR — amount for this leg (gross, commission, settlement payment, or reversal). */
@@ -46,16 +55,47 @@ const transactionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+transactionSchema.pre('validate', function requirePhysioForPhysioLedger(next) {
+  if (PHYSIO_LEDGER_TYPES.includes(this.type) && !this.physioId) {
+    this.invalidate('physioId', 'physioId is required for physio ledger types');
+  }
+  if (PATIENT_PLATFORM_TYPES.includes(this.type) && !this.userId) {
+    this.invalidate('userId', 'userId is required for patient/platform ledger types');
+  }
+  next();
+});
+
 transactionSchema.index({ physioId: 1, createdAt: -1 });
-// Widened to include `meta.paymentId` so multi-installment bookings can post
-// one credit/commission pair per Payment. Legacy rows without paymentId still
-// dedupe correctly because Mongo treats missing keys as null during indexing.
 transactionSchema.index(
   { bookingId: 1, physioId: 1, type: 1, direction: 1, 'meta.leg': 1, 'meta.paymentId': 1 },
   {
     unique: true,
     partialFilterExpression: { status: 'posted', 'meta.leg': { $type: 'string' } },
     name: 'uniq_posted_leg_per_payment',
+  }
+);
+transactionSchema.index(
+  { userId: 1, type: 1, 'meta.referredUserId': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { type: 'referral_credit', status: 'posted' },
+    name: 'uniq_referral_credit_per_referred',
+  }
+);
+transactionSchema.index(
+  { bookingId: 1, type: 1, userId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { type: 'wallet_discount', status: 'posted' },
+    name: 'uniq_wallet_discount_per_booking',
+  }
+);
+transactionSchema.index(
+  { userId: 1, type: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { type: 'referral_signup_bonus', status: 'posted' },
+    name: 'uniq_referral_signup_bonus_per_user',
   }
 );
 

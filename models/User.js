@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { generateUniqueReferralCode } from '../utils/referralCode.js';
 
 const coordinatesSchema = new mongoose.Schema(
   {
@@ -64,14 +65,38 @@ const userSchema = new mongoose.Schema(
     /** Public path served under /uploads, e.g. /uploads/avatars/… */
     avatarUrl: { type: String, trim: true, default: '' },
     expoPushTokens: { type: [expoPushTokenSchema], default: [] },
+    /** Unique share code for patient referrals (6-char uppercase alphanumeric). */
+    referralCode: { type: String, trim: true, uppercase: true, default: null },
+    /** Set once when registering with another patient's referral code. */
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    /** Platform-funded referral credits (INR) — patients only. */
+    walletBalance: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true }
 );
+
+userSchema.pre('save', async function assignReferralCode(next) {
+  if (!this.isNew || this.referralCode) return next();
+  try {
+    this.referralCode = await generateUniqueReferralCode();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** Non-empty emails only (phone-only accounts may omit or use empty). */
 userSchema.index(
   { email: 1 },
   { unique: true, partialFilterExpression: { email: { $type: 'string', $gt: '' } } }
+);
+userSchema.index(
+  { referralCode: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { referralCode: { $type: 'string', $gt: '' } } }
 );
 
 export default mongoose.model('User', userSchema);

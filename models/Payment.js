@@ -55,6 +55,10 @@ const paymentSchema = new mongoose.Schema(
     note: { type: String, default: '', trim: true, maxlength: 500 },
     /** Admin's reason when rejecting an offline collection. */
     rejectReason: { type: String, default: '', trim: true, maxlength: 500 },
+    meta: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
   },
   { timestamps: true }
 );

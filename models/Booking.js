@@ -80,6 +80,10 @@ const bookingSchema = new mongoose.Schema(
       updatedAt: { type: Date, default: null },
     },
     totalAmount: { type: Number, min: 0, default: null },
+    /** Platform wallet credit applied at checkout (INR); physio split uses gross totalAmount. */
+    walletDiscount: { type: Number, default: 0, min: 0 },
+    /** True after walletBalance was decremented for walletDiscount. */
+    walletDeducted: { type: Boolean, default: false },
     amountPerSession: { type: Number, min: 0, default: null },
     /** Captured straight-line distance between patient and assigned physio at assignment time (km). */
     distanceKmAtAssign: { type: Number, min: 0, default: null },

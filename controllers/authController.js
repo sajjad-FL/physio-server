@@ -8,6 +8,8 @@ import { normalizeRole } from '../utils/userRole.js';
 import { grantPasswordReset, consumePasswordResetGrant } from '../utils/passwordResetGrant.js';
 import { parseAddressPayload } from './profileController.js';
 import { normalizePatientGender } from '../utils/patientGender.js';
+import { normalizeReferralCodeInput } from '../utils/referralCode.js';
+import { processReferralSignupBonus } from '../services/referralSignupBonus.js';
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
@@ -205,6 +207,22 @@ export async function registerPatient(req, res, next) {
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const genderToSave = wantsFullProfile ? genderNormalized : 'prefer_not_to_say';
+
+    let referredBy = null;
+    const referralCodeRaw = normalizeReferralCodeInput(req.body?.referralCode);
+    if (referralCodeRaw) {
+      const referrer = await User.findOne({ referralCode: referralCodeRaw, role: 'user' })
+        .select('_id phone')
+        .lean();
+      if (!referrer) {
+        return res.status(400).json({ message: 'Invalid referral code' });
+      }
+      if (referrer.phone === pv.normalized) {
+        return res.status(400).json({ message: 'You cannot use your own referral code' });
+      }
+      referredBy = referrer._id;
+    }
+
     const user = await User.create({
       phone: pv.normalized,
       name,
@@ -219,13 +237,27 @@ export async function registerPatient(req, res, next) {
       isVerified: true,
       isProfileComplete,
       role: 'user',
+      ...(referredBy ? { referredBy } : {}),
     });
+
+    let referralSignupBonusCredited = 0;
+    if (referredBy) {
+      try {
+        const bonusResult = await processReferralSignupBonus(user);
+        if (bonusResult.processed && bonusResult.amount > 0) {
+          referralSignupBonusCredited = bonusResult.amount;
+        }
+      } catch (e) {
+        console.warn('[referral] signup bonus:', e?.message || e);
+      }
+    }
 
     const token = signUserToken(user);
     return res.status(201).json({
       token,
       role: normalizeRole(user),
       isProfileComplete: user.isProfileComplete === true,
+      ...(referralSignupBonusCredited > 0 ? { referralSignupBonusCredited } : {}),
     });
   } catch (err) {
     if (err?.code === 11000) {
