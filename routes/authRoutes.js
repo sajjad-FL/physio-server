@@ -10,21 +10,23 @@ import {
 } from '../controllers/authController.js';
 import { registerPhysio } from '../controllers/physioRegistrationController.js';
 import { uploadOnboardingFiles } from '../config/upload.js';
+import { authLimiter, forgotPasswordLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
-router.post('/register', registerPatient);
+router.post('/register', authLimiter, registerPatient);
 // Backward compatibility for older/mobile clients expecting /auth/send-otp
-router.post('/send-otp', sendSignupOtp);
-router.post('/signup-otp', sendSignupOtp);
-router.post('/login', loginWithPassword);
-router.post('/debug-login-otp', debugSendLoginOtp);
-router.post('/forgot-password', forgotPassword);
-router.post('/verify-otp', verifyPasswordResetOtp);
-router.post('/reset-password', resetPassword);
+router.post('/send-otp', authLimiter, sendSignupOtp);
+router.post('/signup-otp', authLimiter, sendSignupOtp);
+router.post('/login', authLimiter, loginWithPassword);
+router.post('/debug-login-otp', authLimiter, debugSendLoginOtp);
+router.post('/forgot-password', forgotPasswordLimiter, forgotPassword);
+router.post('/verify-otp', authLimiter, verifyPasswordResetOtp);
+router.post('/reset-password', authLimiter, resetPassword);
 
 router.post(
   '/register-physio',
+  authLimiter,
   uploadOnboardingFiles.fields([
     { name: 'avatar', maxCount: 1 },
     { name: 'certificate', maxCount: 1 },
