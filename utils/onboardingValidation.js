@@ -120,36 +120,6 @@ export function validatePracticeSection(practice) {
         : [];
   if (areaList.length === 0) errors.areas = 'Add at least one service area';
 
-  const MAX_FEE = 500000;
-  const minStr =
-    practice?.feeMin !== undefined && practice?.feeMin !== null && String(practice.feeMin).trim() !== ''
-      ? String(practice.feeMin).trim()
-      : String(practice?.fees ?? '').trim();
-  const maxStr =
-    practice?.feeMax !== undefined && practice?.feeMax !== null ? String(practice.feeMax).trim() : '';
-
-  if (!minStr) {
-    errors.feeMin = 'Minimum fee per session is required';
-  } else {
-    const min = Number(minStr);
-    if (!Number.isFinite(min) || min <= 0) {
-      errors.feeMin = 'Enter a valid minimum fee greater than zero (₹)';
-    } else if (min > MAX_FEE) {
-      errors.feeMin = 'Fee seems unreasonably high — please check';
-    }
-    if (maxStr !== '') {
-      const min = Number(minStr);
-      const max = Number(maxStr);
-      if (!Number.isFinite(max) || max <= 0) {
-        errors.feeMax = 'Enter a valid maximum fee (₹)';
-      } else if (max > MAX_FEE) {
-        errors.feeMax = 'Fee seems unreasonably high — please check';
-      } else if (Number.isFinite(min) && max < min) {
-        errors.feeMax = 'Maximum must be greater than or equal to minimum';
-      }
-    }
-  }
-
   return { errors };
 }
 
@@ -206,13 +176,20 @@ export function validateSubmitReady(p, opts = {}) {
 
   const cert = hasUrl(q.certificateUrl);
   const du = p.documentUrls || {};
-  if (!cert) errors.certificate = 'Upload your qualification certificate';
-  if (!hasUrl(du.idProof)) errors.idProof = 'Upload ID proof';
-  if (!hasUrl(du.registrationCertificate)) errors.registrationCertificate = 'Upload registration certificate';
+  const internshipUrls = Array.isArray(du.internshipCertificates)
+    ? du.internshipCertificates.filter((u) => hasUrl(u))
+    : hasUrl(du.internshipCertificate)
+      ? [du.internshipCertificate]
+      : [];
+  if (!cert) errors.certificate = 'Upload your BPT/MPT pass certificate';
+  if (internshipUrls.length === 0) {
+    errors.internshipCertificate = 'Upload at least one internship certificate';
+  }
+  if (!hasUrl(du.idProof)) errors.idProof = 'Upload your GOVERNMENT ID';
   if (!hasUrl(du.selfieWithId)) errors.selfieWithId = 'Upload a selfie with your ID';
 
   if (!isValidIdProofType(du.idProofType)) {
-    errors.idProofType = 'Select the type of ID you uploaded (Aadhaar, PAN, Passport, or Voter ID)';
+    errors.idProofType = 'Select the GOVT ID type you uploaded (Aadhaar, PAN, Passport, or Voter ID)';
   }
 
   if (opts.requireSignedNda && !hasUrl(du.signedNda)) {

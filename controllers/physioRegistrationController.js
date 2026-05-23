@@ -37,6 +37,11 @@ function truthyQualificationDeclaration(v) {
   return v === true || v === 'true' || v === 'on' || v === '1';
 }
 
+function looksLikeBrokenMultipartField(value) {
+  const s = String(value ?? '').trim();
+  return s === '[object Object]' || s === '[object File]';
+}
+
 function collectValidationErrors(body, files) {
   const errors = {};
 
@@ -50,8 +55,8 @@ function collectValidationErrors(body, files) {
   if (!phoneCheck.valid) {
     errors.phone = phoneCheck.message;
   }
-  if (password.length < 8) {
-    errors.password = 'Password must be at least 8 characters';
+  if (password.length < 6) {
+    errors.password = 'Password must be at least 6 characters';
   }
 
   Object.assign(
@@ -73,7 +78,7 @@ function collectValidationErrors(body, files) {
   if (!Number.isFinite(covLat) || !Number.isFinite(covLng)) {
     errors.location =
       errors.location ||
-      'Use map search or “Pick on map” to set your coverage point (needed for patient booking).';
+      'Pick your coverage area on the map (needed for patient booking).';
   } else if (covLat < -90 || covLat > 90 || covLng < -180 || covLng > 180) {
     errors.location = 'Invalid map coordinates';
   }
@@ -95,8 +100,6 @@ function collectValidationErrors(body, files) {
       specialization: body.specialization,
       serviceType: body.serviceType,
       areas: body.areas,
-      feeMin: body.feeMin ?? body.fees,
-      feeMax: body.feeMax,
     }).errors
   );
 
@@ -104,16 +107,52 @@ function collectValidationErrors(body, files) {
   const idProof = files?.idProof?.[0] || files?.id_proof?.[0];
   const registrationCertificate = files?.registrationCertificate?.[0];
   const selfieWithId = files?.selfieWithId?.[0];
-  const internshipCertificate = files?.internshipCertificate?.[0];
-  const councilRegistrationCertificate = files?.councilRegistrationCertificate?.[0];
+  const internshipCertificates = Array.isArray(files?.internshipCertificate)
+    ? files.internshipCertificate
+    : files?.internshipCertificate
+      ? [files.internshipCertificate]
+      : [];
   const idProofType = String(body.idProofType || '').trim().toLowerCase();
 
-  if (!certificate) errors.certificate = 'Qualification certificate is required';
-  if (!idProof) errors.idProof = 'ID proof is required';
-  if (!registrationCertificate) errors.registrationCertificate = 'Registration certificate is required';
-  if (!selfieWithId) errors.selfieWithId = 'Selfie with ID is required';
+  const avatar = files?.avatar?.[0];
+  if (!avatar) {
+    if (looksLikeBrokenMultipartField(body.avatar)) {
+      errors.avatar = 'Photo upload failed — re-select the file and submit again';
+    } else {
+      errors.avatar = 'Passport size photo is required';
+    }
+  }
+
+  if (!certificate) {
+    if (looksLikeBrokenMultipartField(body.certificate)) {
+      errors.certificate = 'Certificate upload failed — re-select the file and submit again';
+    } else {
+      errors.certificate = 'BPT/MPT pass certificate is required';
+    }
+  }
+  if (!idProof) {
+    if (looksLikeBrokenMultipartField(body.idProof)) {
+      errors.idProof = 'ID upload failed — re-select the file and submit again';
+    } else {
+      errors.idProof = 'GOVERNMENT ID is required';
+    }
+  }
+  if (!selfieWithId) {
+    if (looksLikeBrokenMultipartField(body.selfieWithId)) {
+      errors.selfieWithId = 'Selfie upload failed — re-select the file and submit again';
+    } else {
+      errors.selfieWithId = 'Selfie with ID is required';
+    }
+  }
+  if (internshipCertificates.length === 0) {
+    if (looksLikeBrokenMultipartField(body.internshipCertificate)) {
+      errors.internshipCertificate = 'Internship upload failed — re-select the file and submit again';
+    } else {
+      errors.internshipCertificate = 'Upload at least one internship certificate';
+    }
+  }
   if (!isValidIdProofType(idProofType)) {
-    errors.idProofType = 'Select ID type (Aadhaar, PAN, Passport, or Voter ID)';
+    errors.idProofType = 'Select GOVT ID type (Aadhaar, PAN, Passport, or Voter ID)';
   }
   if (!truthyQualificationDeclaration(body.qualificationDeclaration)) {
     errors.qualificationDeclaration = 'You must agree to the qualification declaration';
@@ -130,10 +169,9 @@ function collectValidationErrors(body, files) {
     idProof,
     registrationCertificate,
     selfieWithId,
-    internshipCertificate,
-    councilRegistrationCertificate,
+    internshipCertificates,
     idProofType,
-    avatar: files?.avatar?.[0],
+    avatar,
   };
 }
 
@@ -159,8 +197,7 @@ export async function registerPhysio(req, res, next) {
       idProof,
       registrationCertificate,
       selfieWithId,
-      internshipCertificate,
-      councilRegistrationCertificate,
+      internshipCertificates,
       idProofType,
       avatar,
     } = parsed;
@@ -209,9 +246,6 @@ export async function registerPhysio(req, res, next) {
       ? String(body.serviceType).trim()
       : 'both';
     const serviceAreas = toAreas(body.areas);
-    const minFee = Number(body.feeMin ?? body.fees);
-    const pricePerSession = Number.isFinite(minFee) ? minFee : 0;
-    const pricePerSessionMax = null;
 
     const covLat = Number(body.lat);
     const covLng = Number(body.lng);
@@ -242,8 +276,6 @@ export async function registerPhysio(req, res, next) {
         experience,
         serviceType,
         serviceAreas,
-        pricePerSession,
-        pricePerSessionMax,
         qualification: {
           degree,
           university,
@@ -257,6 +289,7 @@ export async function registerPhysio(req, res, next) {
           registrationCertificate: '',
           selfieWithId: '',
           internshipCertificate: '',
+          internshipCertificates: [],
           councilRegistrationCertificate: '',
           signedNda: '',
         },
@@ -307,23 +340,28 @@ export async function registerPhysio(req, res, next) {
       $set['documentUrls.idProofType'] = idProofType;
       docs.push({ type: 'id_proof', url: idUrl, uploadedAt: new Date() });
 
-      const regUrl = await persistPhysioUploadFile(registrationCertificate, pid, 'registration');
-      $set['documentUrls.registrationCertificate'] = regUrl;
-      docs.push({ type: 'registration_certificate', url: regUrl, uploadedAt: new Date() });
+      const regUrl = registrationCertificate
+        ? await persistPhysioUploadFile(registrationCertificate, pid, 'registration')
+        : null;
+      if (regUrl) {
+        $set['documentUrls.registrationCertificate'] = regUrl;
+        docs.push({ type: 'registration_certificate', url: regUrl, uploadedAt: new Date() });
+      }
 
       const selfieUrl = await persistPhysioUploadFile(selfieWithId, pid, 'selfie_id');
       $set['documentUrls.selfieWithId'] = selfieUrl;
       docs.push({ type: 'selfie_with_id', url: selfieUrl, uploadedAt: new Date() });
 
-      if (internshipCertificate) {
-        const u = await persistPhysioUploadFile(internshipCertificate, pid, 'internship');
-        $set['documentUrls.internshipCertificate'] = u;
+      const internshipUrls = [];
+      for (let i = 0; i < internshipCertificates.length; i += 1) {
+        const file = internshipCertificates[i];
+        const u = await persistPhysioUploadFile(file, pid, `internship_${i + 1}`);
+        internshipUrls.push(u);
         docs.push({ type: 'internship_certificate', url: u, uploadedAt: new Date() });
       }
-      if (councilRegistrationCertificate) {
-        const u = await persistPhysioUploadFile(councilRegistrationCertificate, pid, 'council_registration');
-        $set['documentUrls.councilRegistrationCertificate'] = u;
-        docs.push({ type: 'council_registration_certificate', url: u, uploadedAt: new Date() });
+      if (internshipUrls.length) {
+        $set['documentUrls.internshipCertificates'] = internshipUrls;
+        $set['documentUrls.internshipCertificate'] = internshipUrls[0];
       }
 
       physio = await Physiotherapist.findByIdAndUpdate(

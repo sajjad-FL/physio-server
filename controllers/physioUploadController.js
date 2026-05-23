@@ -84,8 +84,11 @@ export async function uploadOnboardingFiles(req, res, next) {
     const idProof = f.idProof?.[0] || f.id_proof?.[0];
     const registrationCertificate = f.registrationCertificate?.[0];
     const selfieWithId = f.selfieWithId?.[0];
-    const internshipCertificate = f.internshipCertificate?.[0];
-    const councilRegistrationCertificate = f.councilRegistrationCertificate?.[0];
+    const internshipCertificateFiles = Array.isArray(f.internshipCertificate)
+      ? f.internshipCertificate
+      : f.internshipCertificate
+        ? [f.internshipCertificate]
+        : [];
 
     const idProofTypeRaw = req.body?.idProofType;
     const idProofType =
@@ -99,8 +102,7 @@ export async function uploadOnboardingFiles(req, res, next) {
       !idProof &&
       !registrationCertificate &&
       !selfieWithId &&
-      !internshipCertificate &&
-      !councilRegistrationCertificate &&
+      internshipCertificateFiles.length === 0 &&
       idProofType === null
     ) {
       return res.status(400).json({ message: 'Provide at least one file or idProofType' });
@@ -141,15 +143,22 @@ export async function uploadOnboardingFiles(req, res, next) {
       $set['documentUrls.selfieWithId'] = url;
       newDocs.push({ type: 'selfie_with_id', url, uploadedAt: new Date() });
     }
-    if (internshipCertificate) {
-      const url = await persistFile(internshipCertificate, physioId, 'internship');
-      $set['documentUrls.internshipCertificate'] = url;
-      newDocs.push({ type: 'internship_certificate', url, uploadedAt: new Date() });
-    }
-    if (councilRegistrationCertificate) {
-      const url = await persistFile(councilRegistrationCertificate, physioId, 'council_registration');
-      $set['documentUrls.councilRegistrationCertificate'] = url;
-      newDocs.push({ type: 'council_registration_certificate', url, uploadedAt: new Date() });
+    if (internshipCertificateFiles.length) {
+      const existing = Array.isArray(existingUp.documentUrls?.internshipCertificates)
+        ? existingUp.documentUrls.internshipCertificates.filter(Boolean)
+        : existingUp.documentUrls?.internshipCertificate
+          ? [existingUp.documentUrls.internshipCertificate]
+          : [];
+      const uploadedUrls = [];
+      for (let i = 0; i < internshipCertificateFiles.length; i += 1) {
+        const file = internshipCertificateFiles[i];
+        const url = await persistFile(file, physioId, `internship_${existing.length + i + 1}`);
+        uploadedUrls.push(url);
+        newDocs.push({ type: 'internship_certificate', url, uploadedAt: new Date() });
+      }
+      const merged = [...existing, ...uploadedUrls];
+      $set['documentUrls.internshipCertificates'] = merged;
+      $set['documentUrls.internshipCertificate'] = merged[0] || '';
     }
     if (idProofType !== null) {
       $set['documentUrls.idProofType'] = idProofType;
