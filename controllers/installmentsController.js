@@ -36,6 +36,8 @@ function getRazorpayConfig() {
  */
 async function computeOutstanding(booking) {
   const rows = await Payment.find({ bookingId: booking._id }).lean();
+  // 'cancelled' rows (abandoned Razorpay checkout) are excluded so they don't
+  // permanently reduce the outstanding balance.
   const claimed = rows
     .filter((r) => ['pending', 'paid', 'collected', 'verified'].includes(r.status))
     .reduce((s, r) => s + Number(r.amount || 0), 0);
@@ -346,6 +348,39 @@ export async function verifyInstallmentOrder(req, res, next) {
       // non-fatal
     }
 
+    return res.json({ payment: payment.toObject() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Patient cancels a pending Razorpay installment order (e.g. dismissed checkout
+ * without completing payment). Marks the Payment row as `cancelled` so it no
+ * longer reduces computeOutstanding for the next attempt.
+ * Idempotent — if the row is already in a terminal state it is returned as-is.
+ */
+export async function cancelInstallmentOrder(req, res, next) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!mongoose.isValidObjectId(req.params.paymentId)) {
+      return res.status(400).json({ message: 'Invalid payment id' });
+    }
+
+    const payment = await Payment.findById(req.params.paymentId);
+    if (!payment) return res.status(404).json({ message: 'Payment not found' });
+    if (payment.userId.toString() !== userId) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    // Already in a terminal state — return as-is (idempotent)
+    if (payment.status !== 'pending') {
+      return res.json({ payment: payment.toObject() });
+    }
+
+    payment.status = 'cancelled';
+    await payment.save();
     return res.json({ payment: payment.toObject() });
   } catch (err) {
     next(err);

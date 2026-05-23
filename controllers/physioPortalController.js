@@ -10,8 +10,12 @@ import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
 import {
   deriveBookingPaymentSummary,
-  computeUnlockedSessions,
 } from '../utils/installmentRollup.js';
+import { getRequiredPctForSession } from '../constants/planMilestones.js';
+
+function roundMoney2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'You already have another booking in that time slot. Please ask admin to reassign this booking or reschedule one of them.';
@@ -310,11 +314,12 @@ async function loadBookingForSessionMutation(req, res) {
 }
 
 /**
- * Strict coverage gate for session state transitions. Physio can only move
- * session #N if verified Payment rows cover N sessions.
+ * Milestone-based coverage gate for session state transitions.
  *
- * Writes a response + returns `{ ok: false }` on failure; otherwise returns
- * `{ ok: true, summary, ordinal }`.
+ * Before completing session #N the cumulative verified payment must meet the
+ * milestone threshold defined in planMilestones.js.  The old per-session
+ * "unlock" logic has been removed — sessions are no longer individually
+ * locked; only milestone checkpoints are enforced.
  */
 async function enforcePaymentCoverage(booking, sessionId, res) {
   const payments = await Payment.find({ bookingId: booking._id }).lean();
@@ -331,43 +336,37 @@ async function enforcePaymentCoverage(booking, sessionId, res) {
     ordinal = idx + 1;
   }
 
-  // Back-compat: legacy single-session bookings that went through the atomic
-  // /payment/verify flow won't have Payment rows yet. Fall back to the legacy
-  // booking-level status check when no installments exist.
-  if (payments.length === 0) {
+  // Determine verified paid amount
+  let totalPaid = 0;
+  let totalAmount = roundMoney2(Number(booking.totalAmount || booking.payment?.amount || 0));
+  let summary = null;
+
+  if (payments.length > 0) {
+    summary = deriveBookingPaymentSummary(booking, payments);
+    totalPaid = summary.totalPaid;
+    totalAmount = summary.totalAmount;
+  } else {
+    // Legacy: no Payment rows — fall back to booking-level payment status
     const offline =
       booking.payment?.mode === 'offline' ||
       (booking.serviceType === 'home' && booking.homePlanPaymentMode === 'offline');
     const isPaid = offline
       ? booking.payment?.status === 'verified'
       : booking.payment?.status === 'paid';
-    const totalAmount = Number(booking.totalAmount || booking.payment?.amount || 0);
-    const totalPaidLegacy =
-      isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
-    const unlocked = computeUnlockedSessions(sessionsCount, totalPaidLegacy, totalAmount);
-    if (ordinal > unlocked) {
-      res.status(400).json({
-        message:
-          `Session #${ordinal} is locked. Currently unlocked: up to session #${unlocked} of ${sessionsCount}.`,
-        code: 'payment_coverage_insufficient',
-      });
-      return { ok: false };
-    }
-    return { ok: true, ordinal };
+    totalPaid = isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
   }
 
-  const summary = deriveBookingPaymentSummary(booking, payments);
-  const unlocked = Number(summary.unlockedSessions || 0);
+  const paidPct = totalAmount > 0 ? totalPaid / totalAmount : 0;
+  const required = getRequiredPctForSession(sessionsCount, ordinal);
 
-  if (ordinal > unlocked) {
-    const hint =
-      unlocked === 0
-        ? 'Collect at least one installment before marking any session.'
-        : `Currently unlocked: up to session #${unlocked} of ${sessionsCount}. Collect the next installment to open more.`;
+  if (paidPct + 1e-6 < required) {
+    const pctNeeded = Math.round(required * 100);
+    const pctPaid = Math.round(paidPct * 100);
+    const amtNeeded = Math.max(0, Math.round((required - paidPct) * totalAmount * 100) / 100);
     res.status(400).json({
-      message: `Session #${ordinal} is locked. ${hint}`,
-      code: 'payment_coverage_insufficient',
-      paymentSummary: summary,
+      message: `Session #${ordinal} requires at least ${pctNeeded}% payment (₹${amtNeeded} more needed). Currently ${pctPaid}% paid.`,
+      code: 'payment_milestone_not_met',
+      paymentSummary: summary ?? null,
     });
     return { ok: false };
   }
