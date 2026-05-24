@@ -5,7 +5,7 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
 import { distanceKm } from '../utils/geo.js';
-import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
+import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
   bookingAmountRupees,
@@ -674,6 +674,9 @@ export async function requestHomeBooking(req, res, next) {
     }
     if (date === todayYmdHome && isSlotStartInPastForToday(normalizedTimeSlot)) {
       return res.status(400).json({ message: 'This time slot is no longer available' });
+    }
+    if (date === todayYmdHome && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
     }
 
     const platformCapacityHome = await getBookablePhysioCount();
