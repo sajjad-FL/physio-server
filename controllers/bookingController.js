@@ -375,7 +375,7 @@ export async function listMyBookings(req, res, next) {
       Booking.find({ userId })
       .populate('userId', 'name phone location coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
-      .sort({ date: -1, timeSlot: -1 })
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -817,7 +817,12 @@ export async function createHomePlan(req, res, next) {
     booking.homePlanPaymentMode = paymentMode;
     booking.offlinePaymentVerified = false;
     booking.planStatus = 'proposed';
-    booking.status = 'assigned';
+    if (booking.status === 'assigned') {
+      // Submitting a plan is an implicit acceptance of the assignment
+      booking.status = 'accepted';
+      booking.sessionStatus = 'scheduled';
+    }
+    // If already accepted/scheduled/completed, status stays as-is
     booking.payment = {
       mode: paymentMode,
       status: 'pending',
@@ -1046,7 +1051,7 @@ export async function approveHomePlan(req, res, next) {
     }
 
     booking.planStatus = 'approved';
-    booking.status = 'assigned';
+    // Keep booking.status as 'accepted' — plan approval does not reset the assignment
     await booking.save();
 
     fireBookingPush(async () => {

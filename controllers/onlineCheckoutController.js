@@ -513,7 +513,7 @@ export async function renderHostedOnlineCheckoutPage(req, res, next) {
 
     const html = `<!DOCTYPE html><html><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Pay · PhysioKhom</title>
+<title>Pay · PhysiOkhom</title>
 <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 <style>
 body{font-family:system-ui,sans-serif;background:#0f766e;color:#fff;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;text-align:center;}
@@ -537,7 +537,7 @@ window.onload=function(){
       key:String(C.keyId||''),
       amount:Number(C.amount)||0,
       currency:String(C.currency||'INR'),
-      name:'PhysioKhom',
+      name:'PhysiOkhom',
       description:'Online consultation',
       order_id:String(C.orderId||''),
       prefill:PF,
