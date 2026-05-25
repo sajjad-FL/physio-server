@@ -12,6 +12,7 @@ import {
   listMyBookings,
   updateBooking,
   getBookingById,
+  confirmSession,
 } from '../controllers/bookingController.js';
 import {
   startOnlineCheckout,
@@ -38,6 +39,7 @@ router.post('/request-home', requireAuth, requestHomeBooking);
 router.get('/mine', requireAuth, listMyBookings);
 router.get('/my', requireAuth, listMyBookings);
 router.get('/', requireAdmin, listBookings);
+router.post('/:bookingId/sessions/:sessionId/confirm', requireAuth, confirmSession);
 router.get('/:id', requireAuth, getBookingById);
 router.patch(
   '/:id/reschedule',

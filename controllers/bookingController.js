@@ -30,8 +30,15 @@ async function attachPaymentsAndSummary(booking) {
   const payments = await Payment.find({ bookingId: booking._id })
     .sort({ createdAt: -1 })
     .lean();
+  const shaped = payments.map((p) => ({
+    ...p,
+    sessionOrdinal:
+      p.sessionId && Array.isArray(booking.schedule)
+        ? booking.schedule.findIndex((s) => String(s._id) === String(p.sessionId)) + 1 || null
+        : null,
+  }));
   return {
-    payments,
+    payments: shaped,
     paymentSummary: deriveBookingPaymentSummary(booking, payments),
   };
 }
@@ -1392,6 +1399,54 @@ export async function deleteAdminBookingSession(req, res, next) {
     if (err?.code === 11000) {
       return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
     }
+    next(err);
+  }
+}
+
+export async function confirmSession(req, res, next) {
+  try {
+    const userId = req.user?.id;
+    const { bookingId, sessionId } = req.params;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!mongoose.isValidObjectId(bookingId)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+    if (!sessionId || !mongoose.isValidObjectId(sessionId)) {
+      return res.status(400).json({ message: 'Invalid session id' });
+    }
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (String(booking.userId) !== String(userId)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const entry = booking.schedule?.id?.(sessionId) ?? null;
+    if (!entry) {
+      return res.status(404).json({ message: 'Session not found on this booking' });
+    }
+    if (entry.status !== 'completed') {
+      return res.status(400).json({ message: 'Session is not completed yet' });
+    }
+    if (entry.patientConfirmed) {
+      return res.status(400).json({ message: 'Session already confirmed' });
+    }
+
+    entry.patientConfirmed = true;
+    entry.patientConfirmedAt = new Date();
+    await booking.save();
+
+    const out = await Booking.findById(bookingId)
+      .populate('userId', 'name phone location coordinates')
+      .populate(
+        'physioId',
+        'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews',
+      )
+      .lean();
+
+    const { payments, paymentSummary } = await attachPaymentsAndSummary(out);
+    return res.json({ ...out, payments, paymentSummary });
+  } catch (err) {
     next(err);
   }
 }

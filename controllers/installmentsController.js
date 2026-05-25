@@ -12,9 +12,29 @@ import {
   postOfflineInstallmentPair,
 } from '../services/ledger.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+function resolveSessionId(sessionIdRaw, booking) {
+  if (sessionIdRaw == null || sessionIdRaw === '') return { sessionId: null };
+  if (!mongoose.isValidObjectId(sessionIdRaw)) {
+    return { error: 'Invalid session id' };
+  }
+  if (!Array.isArray(booking.schedule) || booking.schedule.length === 0) {
+    return { error: 'This booking has no sessions' };
+  }
+  const entry = booking.schedule.id(sessionIdRaw);
+  if (!entry) return { error: 'Session not found on this booking' };
+  return { sessionId: entry._id };
+}
+
+function sessionLabel(booking, sessionId) {
+  if (!sessionId || !Array.isArray(booking.schedule)) return 'your booking';
+  const idx = booking.schedule.findIndex((s) => String(s._id) === String(sessionId));
+  return idx >= 0 ? `Session ${idx + 1}` : 'your booking';
 }
 
 function getRazorpayConfig() {
@@ -76,6 +96,12 @@ export async function recordOfflineCollection(req, res, next) {
       return res.status(400).json({ message: 'Patient must approve the plan before collection' });
     }
 
+    const sessionResolved = resolveSessionId(req.body?.sessionId, booking);
+    if (sessionResolved.error) {
+      return res.status(400).json({ message: sessionResolved.error });
+    }
+    const sessionId = sessionResolved.sessionId;
+
     const outstanding = await computeOutstanding(booking);
     if (outstanding <= 0) {
       return res.status(400).json({ message: 'This booking is already fully paid' });
@@ -88,6 +114,7 @@ export async function recordOfflineCollection(req, res, next) {
 
     const payment = await Payment.create({
       bookingId: booking._id,
+      sessionId,
       physioId: booking.physioId,
       userId: booking.userId,
       amount,
@@ -96,6 +123,17 @@ export async function recordOfflineCollection(req, res, next) {
       collectedBy: physioId,
       collectedAt: new Date(),
       note,
+    });
+
+    const bookingIdStr = String(booking._id);
+    const patientUserId = booking.userId;
+    const label = sessionLabel(booking, sessionId);
+    fireBookingPush(async () => {
+      await notifyExpoUsers([patientUserId], {
+        title: 'Payment recorded',
+        body: `₹${amount.toFixed(2)} collected for ${label}.`,
+        data: { kind: 'payment_collected', bookingId: bookingIdStr },
+      });
     });
 
     return res.status(201).json({ payment: payment.toObject() });
@@ -223,6 +261,12 @@ export async function createInstallmentOrder(req, res, next) {
         .json({ message: `Amount exceeds outstanding (Rs.${outstanding.toFixed(2)})` });
     }
 
+    const sessionResolved = resolveSessionId(req.body?.sessionId, booking);
+    if (sessionResolved.error) {
+      return res.status(400).json({ message: sessionResolved.error });
+    }
+    const sessionId = sessionResolved.sessionId;
+
     const user = await User.findById(userId).select('role walletBalance').lean();
     if (!user) return res.status(401).json({ message: 'Unauthorized' });
 
@@ -245,6 +289,7 @@ export async function createInstallmentOrder(req, res, next) {
 
     const payment = await Payment.create({
       bookingId: booking._id,
+      sessionId,
       physioId: booking.physioId,
       userId: booking.userId,
       amount,
@@ -347,6 +392,15 @@ export async function verifyInstallmentOrder(req, res, next) {
     } catch (_notifyErr) {
       // non-fatal
     }
+
+    const label = sessionLabel(booking, payment.sessionId);
+    fireBookingPush(async () => {
+      await notifyExpoUsers([booking.userId._id || booking.userId], {
+        title: 'Payment received',
+        body: `₹${payment.amount.toFixed(2)} payment received for ${label}.`,
+        data: { kind: 'payment_verified', bookingId: String(booking._id) },
+      });
+    });
 
     return res.json({ payment: payment.toObject() });
   } catch (err) {

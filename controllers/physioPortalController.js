@@ -336,14 +336,16 @@ async function enforcePaymentCoverage(booking, sessionId, res) {
     ordinal = idx + 1;
   }
 
-  // Determine verified paid amount
-  let totalPaid = 0;
+  // Determine effective paid amount: verified + collected (physio-recorded offline cash)
+  let effectivePaid = 0;
   let totalAmount = roundMoney2(Number(booking.totalAmount || booking.payment?.amount || 0));
   let summary = null;
 
   if (payments.length > 0) {
     summary = deriveBookingPaymentSummary(booking, payments);
-    totalPaid = summary.totalPaid;
+    // Include collected (physio cash in hand) alongside verified so the milestone
+    // gate doesn't block session completion while admin verification is pending.
+    effectivePaid = roundMoney2((summary.totalPaid || 0) + (summary.totalCollected || 0));
     totalAmount = summary.totalAmount;
   } else {
     // Legacy: no Payment rows — fall back to booking-level payment status
@@ -353,10 +355,10 @@ async function enforcePaymentCoverage(booking, sessionId, res) {
     const isPaid = offline
       ? booking.payment?.status === 'verified'
       : booking.payment?.status === 'paid';
-    totalPaid = isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
+    effectivePaid = isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
   }
 
-  const paidPct = totalAmount > 0 ? totalPaid / totalAmount : 0;
+  const paidPct = totalAmount > 0 ? effectivePaid / totalAmount : 0;
   const required = getRequiredPctForSession(sessionsCount, ordinal);
 
   if (paidPct + 1e-6 < required) {
@@ -409,6 +411,20 @@ export async function completeSession(req, res, next) {
       entry.status = 'completed';
       entry.completedAt = new Date();
       entry.completedBy = physioId;
+
+      const sessionPayments = await Payment.find({
+        bookingId: booking._id,
+        sessionId: entry._id,
+        status: { $in: ['collected', 'verified'] },
+      }).lean();
+      const paymentAtCompletion = sessionPayments.reduce(
+        (s, p) => s + Number(p.amount || 0),
+        0,
+      );
+      entry.patientConfirmed = false;
+      entry.patientConfirmedAt = null;
+      entry.paymentAtCompletion = roundMoney2(paymentAtCompletion);
+
       rollupBookingSessionStatus(booking);
     } else if (hasSchedule) {
       return res.status(400).json({
@@ -424,6 +440,24 @@ export async function completeSession(req, res, next) {
     }
 
     await booking.save();
+
+    if (sessionId) {
+      const entry = findScheduleEntry(booking, sessionId);
+      const paymentAtCompletion = Number(entry?.paymentAtCompletion || 0);
+      const ordinal = gated.ordinal;
+      const patientUserId = booking.userId;
+      const bookingIdStr = String(booking._id);
+      fireBookingPush(async () => {
+        const label = ordinal ? `Session ${ordinal}` : 'Your session';
+        const payNote =
+          paymentAtCompletion > 0 ? ` ₹${paymentAtCompletion.toFixed(2)} collected.` : '';
+        await notifyExpoUsers([patientUserId], {
+          title: 'Session completed',
+          body: `${label} with your physio is done.${payNote} Please confirm.`,
+          data: { kind: 'session_completed', bookingId: bookingIdStr },
+        });
+      });
+    }
 
     if (booking.status === 'completed') {
       processReferralRewardOnBookingCompleted(booking).catch((e) =>

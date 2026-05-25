@@ -17,6 +17,7 @@ const paymentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    sessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
     physioId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Physiotherapist',

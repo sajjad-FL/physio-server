@@ -105,11 +105,17 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const verifiedSum = payments
     .filter((p) => p?.status === 'verified')
     .reduce((s, p) => s + Number(p.amount || 0), 0);
+  // collected = physio-recorded offline cash hand-offs awaiting admin verify
+  const collectedSum = payments
+    .filter((p) => p?.status === 'collected')
+    .reduce((s, p) => s + Number(p.amount || 0), 0);
+  // pending / paid = incomplete Razorpay orders (not yet confirmed)
   const pendingSum = payments
-    .filter((p) => ['pending', 'paid', 'collected'].includes(p?.status))
+    .filter((p) => ['pending', 'paid'].includes(p?.status))
     .reduce((s, p) => s + Number(p.amount || 0), 0);
 
   const totalPaid = roundMoney2(verifiedSum);
+  const totalCollected = roundMoney2(collectedSum);
   const totalPending = roundMoney2(pendingSum);
   const outstanding = roundMoney2(Math.max(0, totalAmount - totalPaid));
 
@@ -119,23 +125,27 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const perSession =
     bookingLinePerSession(booking) ||
     (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
-  const coveredSessions = perSession > 0
-    ? Math.min(sessionsCount, Math.floor((totalPaid + 0.009) / perSession))
-    : (totalPaid >= totalAmount ? sessionsCount : 0);
 
-  const paidPct = totalAmount > 0 ? totalPaid / totalAmount : 0;
+  // Effective paid for milestone/coverage purposes: verified + collected (physio cash in hand)
+  const effectivePaid = roundMoney2(verifiedSum + collectedSum);
+  const coveredSessions = perSession > 0
+    ? Math.min(sessionsCount, Math.floor((effectivePaid + 0.009) / perSession))
+    : (effectivePaid >= totalAmount ? sessionsCount : 0);
+
+  const effectivePct = totalAmount > 0 ? effectivePaid / totalAmount : 0;
   const milestones = PLAN_MILESTONES[sessionsCount] ?? null;
   const milestoneStatus = milestones
     ? milestones.map((m) => ({
         bySession: m.bySession,
         requiredPct: m.minCumPct,
-        met: paidPct + 1e-6 >= m.minCumPct,
+        met: effectivePct + 1e-6 >= m.minCumPct,
       }))
     : null;
 
   return {
     totalAmount,
     totalPaid,
+    totalCollected,
     totalPending,
     outstanding,
     coveredSessions,
