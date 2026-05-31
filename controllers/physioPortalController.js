@@ -529,3 +529,38 @@ export async function markSessionNoShow(req, res, next) {
     next(err);
   }
 }
+
+/** POST /physio/sos-alert
+ *  Body: { message: string, coords: { lat: number, lng: number } | null }
+ *  Authenticated physio only.
+ *  Fires a push notification to every admin user and returns 200 immediately.
+ */
+export async function sosAlert(req, res, next) {
+  try {
+    const { message, coords } = req.body ?? {};
+
+    // Build human-readable location string
+    const locationStr = coords?.lat != null
+      ? `${Number(coords.lat).toFixed(5)}, ${Number(coords.lng).toFixed(5)}`
+      : 'location unavailable';
+
+    const physioName = req.physio?.doc?.name ?? 'A physiotherapist';
+
+    // Find all admin user _ids for push targeting
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const adminIds = adminUsers.map(u => u._id);
+
+    // Fire push — non-blocking, never fails the request
+    fireBookingPush(() =>
+      notifyExpoUsers(adminIds, {
+        title: `🚨 SOS — ${physioName}`,
+        body: `${message ?? 'I need assistance at this location.'} · ${locationStr}`,
+        data: { type: 'sos_alert', physioId: req.physio.id, coords: coords ?? null },
+      })
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}

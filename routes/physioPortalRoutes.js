@@ -14,6 +14,7 @@ import {
   completeSession,
   markSessionNoShow,
   getMe,
+  sosAlert,
 } from '../controllers/physioPortalController.js';
 import { getWalletDashboard, listWalletTransactions } from '../controllers/walletController.js';
 import { uploadDocuments, uploadOnboardingFiles as saveOnboardingFiles } from '../controllers/physioUploadController.js';
@@ -82,5 +83,7 @@ router.post(
   ]),
   saveOnboardingFiles
 );
+
+router.post('/sos-alert', ...physioOperationalChain, sosAlert);
 
 export default router;
