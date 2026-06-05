@@ -1,4 +1,4 @@
-import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
+import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import {
   getBookablePhysioCount,
   countActivePrimaryBookingsBySlotForDate,
@@ -27,8 +27,9 @@ export async function getSlots(req, res, next) {
 
     const slots = DAILY_SLOTS.map((timeSlot) => {
       const past = date === todayYmd && isSlotStartInPastForToday(timeSlot);
+      const tooSoon = date === todayYmd && isSlotWithin2HoursForToday(timeSlot);
       const booked = bookedBySlot.get(timeSlot) || 0;
-      const available = !past && capacity > 0 && booked < capacity;
+      const available = !past && !tooSoon && capacity > 0 && booked < capacity;
       return { timeSlot, available, booked, capacity };
     });
 

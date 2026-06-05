@@ -61,6 +61,9 @@ const bookingSchema = new mongoose.Schema(
               default: 'scheduled',
             },
             completedAt: { type: Date, default: null },
+            patientConfirmed: { type: Boolean, default: false },
+            patientConfirmedAt: { type: Date, default: null },
+            paymentAtCompletion: { type: Number, default: 0 },
             completedBy: {
               type: mongoose.Schema.Types.ObjectId,
               ref: 'Physiotherapist',

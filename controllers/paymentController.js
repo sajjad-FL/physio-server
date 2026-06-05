@@ -99,7 +99,7 @@ export async function verifyPayment(req, res, next) {
       return res.status(400).json({ message: 'Missing payment details' });
     }
 
-    const booking = await Booking.findById(bookingId);
+    let booking = await Booking.findById(bookingId);
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (booking.userId.toString() !== userId) return res.status(403).json({ message: 'Forbidden' });
 
@@ -125,30 +125,39 @@ export async function verifyPayment(req, res, next) {
       return res.status(e.statusCode || 400).json({ message: e.message });
     }
 
-    if (booking.payment?.status === 'paid') {
-      return res.status(400).json({ message: 'Payment already recorded' });
-    }
-
     const rupees = bookingAmountRupees(booking);
     const split = computeMarketplaceSplit(rupees > 0 ? rupees : amountPaise / 100);
 
-    booking.paymentStatus = 'held';
-    booking.razorpayOrderId = verifiedOrderId;
-    booking.razorpayPaymentId = verifiedPaymentId;
-    booking.heldAt = new Date();
-    booking.paidAt = booking.paidAt || new Date();
-    if (booking.physioId) {
-      booking.sessionStatus = 'scheduled';
-    }
-    booking.amountPaise = booking.amountPaise || amountPaise;
-    booking.payment = {
-      mode: 'online',
-      status: 'paid',
-      amount: split.amount,
-      commission: split.commission,
-      physioEarning: split.physioEarning,
+    const updateFields = {
+      $set: {
+        paymentStatus: 'held',
+        razorpayOrderId: verifiedOrderId,
+        razorpayPaymentId: verifiedPaymentId,
+        heldAt: new Date(),
+        paidAt: booking.paidAt || new Date(),
+        amountPaise: booking.amountPaise || amountPaise,
+        payment: {
+          mode: 'online',
+          status: 'paid',
+          amount: split.amount,
+          commission: split.commission,
+          physioEarning: split.physioEarning,
+        },
+      },
     };
-    await booking.save();
+    if (booking.physioId) {
+      updateFields.$set.sessionStatus = 'scheduled';
+    }
+
+    const claimed = await Booking.findOneAndUpdate(
+      { _id: bookingId, 'payment.status': { $ne: 'paid' } },
+      updateFields,
+      { new: true }
+    );
+    if (!claimed) {
+      return res.status(400).json({ message: 'Payment already recorded' });
+    }
+    booking = claimed;
 
     await deductWalletForBooking(booking, userId);
     await creditPhysioWalletOnline(booking);

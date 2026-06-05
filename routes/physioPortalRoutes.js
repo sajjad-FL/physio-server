@@ -14,6 +14,7 @@ import {
   completeSession,
   markSessionNoShow,
   getMe,
+  sosAlert,
 } from '../controllers/physioPortalController.js';
 import { getWalletDashboard, listWalletTransactions } from '../controllers/walletController.js';
 import { uploadDocuments, uploadOnboardingFiles as saveOnboardingFiles } from '../controllers/physioUploadController.js';
@@ -78,10 +79,11 @@ router.post(
     { name: 'id_proof', maxCount: 1 },
     { name: 'registrationCertificate', maxCount: 1 },
     { name: 'selfieWithId', maxCount: 1 },
-    { name: 'internshipCertificate', maxCount: 1 },
-    { name: 'councilRegistrationCertificate', maxCount: 1 },
+    { name: 'internshipCertificate', maxCount: 10 },
   ]),
   saveOnboardingFiles
 );
+
+router.post('/sos-alert', ...physioOperationalChain, sosAlert);
 
 export default router;

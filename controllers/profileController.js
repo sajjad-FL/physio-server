@@ -3,6 +3,7 @@ import path from 'node:path';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
+import Booking from '../models/Booking.js';
 import { uploadsRoot } from '../config/upload.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
 import { normalizeRole } from '../utils/userRole.js';
@@ -383,6 +384,56 @@ export async function patchAvatar(req, res, next) {
 
     return res.json({
       avatarUrl: user.avatarUrl,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getWalletSummary(req, res, next) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const user = await User.findById(userId).select('walletBalance').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const bookings = await Booking.find({
+      userId,
+      paymentStatus: { $in: ['held', 'released', 'paid'] },
+    })
+      .select('totalAmount paymentStatus')
+      .lean();
+
+    let heldTotal = 0;
+    let releasedTotal = 0;
+    let totalSpend = 0;
+
+    for (const b of bookings) {
+      const amt = Number(b.totalAmount) || 0;
+      if (b.paymentStatus === 'held') {
+        heldTotal += amt;
+      } else if (b.paymentStatus === 'released') {
+        releasedTotal += amt;
+      }
+      totalSpend += amt;
+    }
+
+    const recentPayments = await Booking.find({
+      userId,
+      paymentStatus: { $in: ['held', 'released', 'paid'] },
+    })
+      .sort({ createdAt: -1 })
+      .limit(15)
+      .populate('physioId', 'name specialization phone avatar')
+      .lean();
+
+    return res.json({
+      walletBalance: user.walletBalance || 0,
+      totalSpend,
+      heldTotal,
+      releasedTotal,
+      recentPayments,
     });
   } catch (err) {
     next(err);

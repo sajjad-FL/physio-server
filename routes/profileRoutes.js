@@ -6,6 +6,7 @@ import {
   patchProfile,
   patchAvatar,
   registerExpoPushToken,
+  getWalletSummary,
 } from '../controllers/profileController.js';
 
 const router = Router();
@@ -20,6 +21,7 @@ function avatarUploadMiddleware(req, res, next) {
 }
 
 router.get('/', authenticateJwt, getProfile);
+router.get('/wallet-summary', authenticateJwt, getWalletSummary);
 router.post('/expo-push-token', authenticateJwt, registerExpoPushToken);
 router.patch('/avatar', authenticateJwt, avatarUploadMiddleware, patchAvatar);
 router.patch('/', authenticateJwt, patchProfile);

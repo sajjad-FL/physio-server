@@ -24,3 +24,15 @@ export function isSlotStartInPastForToday(timeSlot) {
   const slotStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), sh, sm, 0);
   return now.getTime() >= slotStart.getTime();
 }
+
+/**
+ * True when the slot's start time is less than 2 hours from now (today only).
+ * Patients must book at least 2 hours in advance.
+ */
+export function isSlotWithin2HoursForToday(timeSlot) {
+  const m = /^(\d{2}):(\d{2})/.exec(String(timeSlot || '').trim());
+  if (!m) return false;
+  const now = new Date();
+  const slotStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(m[1]), Number(m[2]), 0);
+  return (slotStart.getTime() - now.getTime()) < 2 * 60 * 60 * 1000;
+}

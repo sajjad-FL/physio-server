@@ -5,7 +5,7 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
 import { distanceKm } from '../utils/geo.js';
-import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday } from '../config/slots.js';
+import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
   bookingAmountRupees,
@@ -30,8 +30,15 @@ async function attachPaymentsAndSummary(booking) {
   const payments = await Payment.find({ bookingId: booking._id })
     .sort({ createdAt: -1 })
     .lean();
+  const shaped = payments.map((p) => ({
+    ...p,
+    sessionOrdinal:
+      p.sessionId && Array.isArray(booking.schedule)
+        ? booking.schedule.findIndex((s) => String(s._id) === String(p.sessionId)) + 1 || null
+        : null,
+  }));
   return {
-    payments,
+    payments: shaped,
     paymentSummary: deriveBookingPaymentSummary(booking, payments),
   };
 }
@@ -410,7 +417,7 @@ export async function listMyBookings(req, res, next) {
       Booking.find({ userId })
       .populate('userId', 'name phone location coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
-      .sort({ date: -1, timeSlot: -1 })
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -717,6 +724,9 @@ export async function requestHomeBooking(req, res, next) {
     if (date === todayYmdHome && isSlotStartInPastForToday(normalizedTimeSlot)) {
       return res.status(400).json({ message: 'This time slot is no longer available' });
     }
+    if (date === todayYmdHome && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+    }
 
     const platformCapacityHome = await getBookablePhysioCount();
     if (platformCapacityHome < 1) {
@@ -802,6 +812,9 @@ export async function createHomePlan(req, res, next) {
     if (!Number.isInteger(sessions) || sessions < 1) {
       return res.status(400).json({ message: 'sessions must be an integer greater than 0' });
     }
+    if (![7, 15, 30].includes(sessions)) {
+      return res.status(400).json({ message: 'sessions must be one of 7, 15, or 30' });
+    }
     if (!schedule || schedule.length !== sessions) {
       return res.status(400).json({ message: 'schedule must match the number of sessions' });
     }
@@ -825,12 +838,17 @@ export async function createHomePlan(req, res, next) {
     const perVisitDistance = roundMoney2(Math.max(0, Number(booking.distanceSurchargeAmount) || 0));
     const linePerSession = roundMoney2(amountPerSession + perVisitDistance);
     const sessionSubtotal = sessions * linePerSession;
+
+    // Patient pays the discounted total; physio earns from the undiscounted subtotal
+    // so that the platform absorbs the plan discount rather than the physio.
     const totalAmount = roundMoney2(sessionSubtotal * (1 - discountPercent / 100));
     if (totalAmount <= 0) {
       return res.status(400).json({ message: 'total amount after discount must be greater than 0' });
     }
 
-    const planSplit = computeMarketplaceSplit(totalAmount);
+    const grossSplit    = computeMarketplaceSplit(sessionSubtotal); // split on full (undiscounted) rate
+    const physioEarning = grossSplit.physioEarning;                 // physio always gets 80% of base
+    const platformEarning = roundMoney2(totalAmount - physioEarning); // platform absorbs discount
 
     booking.sessions = sessions;
     booking.schedule = schedule;
@@ -841,13 +859,18 @@ export async function createHomePlan(req, res, next) {
     booking.homePlanPaymentMode = paymentMode;
     booking.offlinePaymentVerified = false;
     booking.planStatus = 'proposed';
-    booking.status = 'assigned';
+    if (booking.status === 'assigned') {
+      // Submitting a plan is an implicit acceptance of the assignment
+      booking.status = 'accepted';
+      booking.sessionStatus = 'scheduled';
+    }
+    // If already accepted/scheduled/completed, status stays as-is
     booking.payment = {
       mode: paymentMode,
       status: 'pending',
-      amount: planSplit.amount,
-      commission: planSplit.commission,
-      physioEarning: planSplit.physioEarning,
+      amount: totalAmount,
+      commission: platformEarning,
+      physioEarning: physioEarning,
     };
     await booking.save();
 
@@ -968,19 +991,23 @@ export async function verifyOfflinePayment(req, res, next) {
     }
 
     const rupees = bookingAmountRupees(booking);
-    const split = computeMarketplaceSplit(rupees);
 
     booking.offlinePaymentVerified = true;
     booking.offlinePaymentRejectReason = '';
     booking.paymentStatus = 'held';
     booking.paidAt = booking.paidAt || new Date();
     booking.sessionStatus = booking.sessionStatus || 'scheduled';
+    // Preserve the commission/physioEarning already set by createHomePlan.
+    // That function computes physioEarning from the undiscounted subtotal so the
+    // physio always receives 80% of the base rate, with the platform absorbing the
+    // plan discount. Recomputing here on the (discounted) totalAmount would
+    // incorrectly reduce physioEarning.
     booking.payment = {
       mode: 'offline',
       status: 'verified',
-      amount: split.amount,
-      commission: split.commission,
-      physioEarning: split.physioEarning,
+      amount: rupees,
+      commission: booking.payment?.commission ?? null,
+      physioEarning: booking.payment?.physioEarning ?? null,
     };
     await booking.save();
 
@@ -1066,7 +1093,7 @@ export async function approveHomePlan(req, res, next) {
     }
 
     booking.planStatus = 'approved';
-    booking.status = 'assigned';
+    // Keep booking.status as 'accepted' — plan approval does not reset the assignment
     await booking.save();
 
     fireBookingPush(async () => {
@@ -1419,6 +1446,54 @@ export async function deleteAdminBookingSession(req, res, next) {
     if (err?.code === 11000) {
       return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
     }
+    next(err);
+  }
+}
+
+export async function confirmSession(req, res, next) {
+  try {
+    const userId = req.user?.id;
+    const { bookingId, sessionId } = req.params;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!mongoose.isValidObjectId(bookingId)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+    if (!sessionId || !mongoose.isValidObjectId(sessionId)) {
+      return res.status(400).json({ message: 'Invalid session id' });
+    }
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (String(booking.userId) !== String(userId)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const entry = booking.schedule?.id?.(sessionId) ?? null;
+    if (!entry) {
+      return res.status(404).json({ message: 'Session not found on this booking' });
+    }
+    if (entry.status !== 'completed') {
+      return res.status(400).json({ message: 'Session is not completed yet' });
+    }
+    if (entry.patientConfirmed) {
+      return res.status(400).json({ message: 'Session already confirmed' });
+    }
+
+    entry.patientConfirmed = true;
+    entry.patientConfirmedAt = new Date();
+    await booking.save();
+
+    const out = await Booking.findById(bookingId)
+      .populate('userId', 'name phone location coordinates')
+      .populate(
+        'physioId',
+        'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews',
+      )
+      .lean();
+
+    const { payments, paymentSummary } = await attachPaymentsAndSummary(out);
+    return res.json({ ...out, payments, paymentSummary });
+  } catch (err) {
     next(err);
   }
 }

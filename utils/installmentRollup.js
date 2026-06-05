@@ -1,5 +1,6 @@
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
+import { PLAN_MILESTONES } from '../constants/planMilestones.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -104,11 +105,17 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const verifiedSum = payments
     .filter((p) => p?.status === 'verified')
     .reduce((s, p) => s + Number(p.amount || 0), 0);
+  // collected = physio-recorded offline cash hand-offs awaiting admin verify
+  const collectedSum = payments
+    .filter((p) => p?.status === 'collected')
+    .reduce((s, p) => s + Number(p.amount || 0), 0);
+  // pending / paid = incomplete Razorpay orders (not yet confirmed)
   const pendingSum = payments
-    .filter((p) => ['pending', 'paid', 'collected'].includes(p?.status))
+    .filter((p) => ['pending', 'paid'].includes(p?.status))
     .reduce((s, p) => s + Number(p.amount || 0), 0);
 
   const totalPaid = roundMoney2(verifiedSum);
+  const totalCollected = roundMoney2(collectedSum);
   const totalPending = roundMoney2(pendingSum);
   const outstanding = roundMoney2(Math.max(0, totalAmount - totalPaid));
 
@@ -118,58 +125,44 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const perSession =
     bookingLinePerSession(booking) ||
     (sessionsCount > 0 ? totalAmount / sessionsCount : totalAmount);
-  const coveredSessions = perSession > 0
-    ? Math.min(sessionsCount, Math.floor((totalPaid + 0.009) / perSession))
-    : (totalPaid >= totalAmount ? sessionsCount : 0);
 
-  const unlockedSessions = computeUnlockedSessions(sessionsCount, totalPaid, totalAmount);
+  // Effective paid for milestone/coverage purposes: verified + collected (physio cash in hand)
+  const effectivePaid = roundMoney2(verifiedSum + collectedSum);
+  const coveredSessions = perSession > 0
+    ? Math.min(sessionsCount, Math.floor((effectivePaid + 0.009) / perSession))
+    : (effectivePaid >= totalAmount ? sessionsCount : 0);
+
+  const effectivePct = totalAmount > 0 ? effectivePaid / totalAmount : 0;
+  const milestones = PLAN_MILESTONES[sessionsCount] ?? null;
+  const milestoneStatus = milestones
+    ? milestones.map((m) => ({
+        bySession: m.bySession,
+        requiredPct: m.minCumPct,
+        met: effectivePct + 1e-6 >= m.minCumPct,
+      }))
+    : null;
 
   return {
     totalAmount,
     totalPaid,
+    totalCollected,
     totalPending,
     outstanding,
     coveredSessions,
-    unlockedSessions,
+    // unlockedSessions is set to sessionsCount so legacy UI code that reads
+    // this field sees "all sessions unlocked" — enforcement is now milestone-based.
+    unlockedSessions: sessionsCount,
     sessionsCount,
     amountPerSession: roundMoney2(perSession),
+    milestoneStatus,
   };
 }
 
 /**
- * Percentage-based session unlock rule.
- *
- * - N = 1: fully paid unlocks the single session.
- * - floor(0.4 * N) >= 2 (roughly N >= 5): zones 40/20/40.
- *     freeZone = floor(0.4 * N) — unlocked at 0% paid.
- *     Any partial payment opens the middle 20% (N - freeZone total).
- *     Full payment opens the final freeZone.
- * - Otherwise (N = 2, 3, 4): session #1 always free; remaining sessions
- *   unlock proportionally via floor(paidPercent * N); final session always
- *   requires 100% paid.
- *
- * Returns the count of sessions whose ordinal (1-indexed) is currently
- * unlocked for completion.
- *
- * @param {number} sessionsCount
- * @param {number} totalPaid
- * @param {number} totalAmount
+ * @deprecated Session locking is removed. Use milestone-based gating via
+ * getRequiredPctForSession (physio-server/constants/planMilestones.js).
+ * Returns sessionsCount so all sessions appear unlocked to legacy callers.
  */
-export function computeUnlockedSessions(sessionsCount, totalPaid, totalAmount) {
-  const n = Math.floor(Number(sessionsCount) || 0);
-  if (n <= 0) return 0;
-  const paid = Number(totalPaid) || 0;
-  const total = Number(totalAmount) || 0;
-  const pct = total > 0 ? paid / total : 0;
-  const fullyPaid = pct + 1e-6 >= 1;
-  if (n === 1) return fullyPaid ? 1 : 0;
-  const freeZone = Math.floor(0.4 * n);
-  if (freeZone >= 2) {
-    if (fullyPaid) return n;
-    if (paid > 0) return n - freeZone;
-    return freeZone;
-  }
-  if (fullyPaid) return n;
-  const covered = Math.floor(pct * n + 1e-9);
-  return Math.min(n - 1, Math.max(1, covered));
+export function computeUnlockedSessions(sessionsCount) {
+  return Math.max(0, Math.floor(Number(sessionsCount) || 0));
 }

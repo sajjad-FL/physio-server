@@ -8,6 +8,7 @@ import {
 import {
   createInstallmentOrder,
   verifyInstallmentOrder,
+  cancelInstallmentOrder,
 } from '../controllers/installmentsController.js';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/adminMiddleware.js';
@@ -21,5 +22,6 @@ router.post('/release', requireAdmin, releasePayment);
 
 router.post('/installments/create', requireAuth, createInstallmentOrder);
 router.post('/installments/verify', requireAuth, verifyInstallmentOrder);
+router.post('/installments/:paymentId/cancel', requireAuth, cancelInstallmentOrder);
 
 export default router;

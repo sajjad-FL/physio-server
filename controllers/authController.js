@@ -10,6 +10,8 @@ import { parseAddressPayload } from './profileController.js';
 import { normalizePatientGender } from '../utils/patientGender.js';
 import { normalizeReferralCodeInput } from '../utils/referralCode.js';
 import { processReferralSignupBonus } from '../services/referralSignupBonus.js';
+import { verifyFirebasePhone } from '../utils/verifyFirebasePhone.js';
+
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
@@ -104,35 +106,52 @@ export async function sendSignupOtp(req, res, next) {
  */
 export async function registerPatient(req, res, next) {
   try {
-    const pv = validateIndianMobile(req.body?.phone);
-    if (!pv.valid) {
-      return res.status(400).json({ message: pv.message });
+    let pv;
+    const firebaseIdToken = req.body?.firebaseIdToken;
+    if (firebaseIdToken) {
+      let fbPhone;
+      try {
+        fbPhone = await verifyFirebasePhone(firebaseIdToken);
+      } catch (e) {
+        return res.status(400).json({ message: e.message });
+      }
+      pv = validateIndianMobile(fbPhone);
+      if (!pv.valid) {
+        return res.status(400).json({ message: 'Phone number from Firebase token is not a valid Indian mobile number.' });
+      }
+    } else {
+      pv = validateIndianMobile(req.body?.phone);
+      if (!pv.valid) {
+        return res.status(400).json({ message: pv.message });
+      }
     }
 
-    const otpRaw = String(req.body?.otp || '').trim();
-    if (!otpRaw) {
-      return res.status(400).json({ message: 'Verification code is required. Tap “Send verification code” first.' });
-    }
-    if (!/^\d{6}$/.test(otpRaw)) {
-      return res.status(400).json({ message: 'Verification code must be 6 digits' });
-    }
+    if (!firebaseIdToken) {
+      const otpRaw = String(req.body?.otp || '').trim();
+      if (!otpRaw) {
+        return res.status(400).json({ message: 'Verification code is required. Tap “Send verification code” first.' });
+      }
+      if (!/^\d{6}$/.test(otpRaw)) {
+        return res.status(400).json({ message: 'Verification code must be 6 digits' });
+      }
 
-    const otpResult = verifyOtpAttempt({
-      phone: pv.normalized,
-      otp: otpRaw,
-      maxAttempts: OTP_MAX_ATTEMPTS,
-      purpose: OTP_PURPOSE_SIGNUP,
-    });
-    if (!otpResult.ok) {
-      if (otpResult.reason === 'locked') {
-        return res.status(429).json({ message: 'Too many incorrect attempts. Request a new verification code.' });
-      }
-      if (otpResult.reason === 'mismatch') {
-        return res.status(400).json({ message: 'Incorrect verification code' });
-      }
-      return res.status(400).json({
-        message: 'Code expired or invalid. Request a new verification code.',
+      const otpResult = verifyOtpAttempt({
+        phone: pv.normalized,
+        otp: otpRaw,
+        maxAttempts: OTP_MAX_ATTEMPTS,
+        purpose: OTP_PURPOSE_SIGNUP,
       });
+      if (!otpResult.ok) {
+        if (otpResult.reason === 'locked') {
+          return res.status(429).json({ message: 'Too many incorrect attempts. Request a new verification code.' });
+        }
+        if (otpResult.reason === 'mismatch') {
+          return res.status(400).json({ message: 'Incorrect verification code' });
+        }
+        return res.status(400).json({
+          message: 'Code expired or invalid. Request a new verification code.',
+        });
+      }
     }
 
     const password = String(req.body?.password || '');
@@ -415,41 +434,46 @@ export async function forgotPassword(req, res, next) {
  */
 export async function verifyPasswordResetOtp(req, res, next) {
   try {
-    const otp = String(req.body?.otp || '').trim();
-    const pv = validateIndianMobile(req.body?.phone);
-    if (!pv.valid) {
-      return res.status(400).json({ message: pv.message });
-    }
-    if (!otp) {
-      return res.status(400).json({ message: 'OTP is required' });
-    }
-    if (!/^\d{6}$/.test(otp)) {
-      return res.status(400).json({ message: 'OTP must be 6 digits' });
-    }
-
-    const result = verifyOtpAttempt({
-      phone: pv.normalized,
-      otp,
-      maxAttempts: OTP_MAX_ATTEMPTS,
-      purpose: OTP_PURPOSE_PASSWORD_RESET,
-    });
-
-    if (!result.ok) {
-      if (result.reason === 'locked') {
-        return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
+    const firebaseIdToken = req.body?.firebaseIdToken;
+    let normalizedPhone;
+    if (firebaseIdToken) {
+      let fbPhone;
+      try {
+        fbPhone = await verifyFirebasePhone(firebaseIdToken);
+      } catch (e) {
+        return res.status(400).json({ message: e.message });
       }
-      if (result.reason === 'mismatch') {
-        return res.status(400).json({ message: 'Incorrect code' });
+      const pv = validateIndianMobile(fbPhone);
+      if (!pv.valid) {
+        return res.status(400).json({ message: 'Phone number from Firebase token is not a valid Indian mobile number.' });
       }
-      return res.status(400).json({ message: 'Code expired or invalid. Please request a new one.' });
+      normalizedPhone = pv.normalized;
+    } else {
+      const otp = String(req.body?.otp || '').trim();
+      const pv = validateIndianMobile(req.body?.phone);
+      if (!pv.valid) {
+        return res.status(400).json({ message: pv.message });
+      }
+      if (!otp) return res.status(400).json({ message: 'OTP is required' });
+      if (!/^\d{6}$/.test(otp)) return res.status(400).json({ message: 'OTP must be 6 digits' });
+      const result = verifyOtpAttempt({
+        phone: pv.normalized,
+        otp,
+        maxAttempts: OTP_MAX_ATTEMPTS,
+        purpose: OTP_PURPOSE_PASSWORD_RESET,
+      });
+      if (!result.ok) {
+        if (result.reason === 'locked') return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
+        if (result.reason === 'mismatch') return res.status(400).json({ message: 'Incorrect code' });
+        return res.status(400).json({ message: 'Code expired or invalid. Please request a new one.' });
+      }
+      normalizedPhone = result.phone;
     }
-
-    const user = await findUserByNormalizedDigits(result.phone);
+    const user = await findUserByNormalizedDigits(normalizedPhone);
     if (!user) {
       return res.status(400).json({ message: 'No account found for this number' });
     }
-
-    grantPasswordReset(result.phone);
+    grantPasswordReset(normalizedPhone);
     return res.json({ message: 'Code verified. You can set a new password.' });
   } catch (err) {
     next(err);

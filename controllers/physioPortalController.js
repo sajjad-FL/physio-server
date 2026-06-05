@@ -10,8 +10,12 @@ import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
 import {
   deriveBookingPaymentSummary,
-  computeUnlockedSessions,
 } from '../utils/installmentRollup.js';
+import { getRequiredPctForSession } from '../constants/planMilestones.js';
+
+function roundMoney2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'You already have another booking in that time slot. Please ask admin to reassign this booking or reschedule one of them.';
@@ -310,11 +314,12 @@ async function loadBookingForSessionMutation(req, res) {
 }
 
 /**
- * Strict coverage gate for session state transitions. Physio can only move
- * session #N if verified Payment rows cover N sessions.
+ * Milestone-based coverage gate for session state transitions.
  *
- * Writes a response + returns `{ ok: false }` on failure; otherwise returns
- * `{ ok: true, summary, ordinal }`.
+ * Before completing session #N the cumulative verified payment must meet the
+ * milestone threshold defined in planMilestones.js.  The old per-session
+ * "unlock" logic has been removed — sessions are no longer individually
+ * locked; only milestone checkpoints are enforced.
  */
 async function enforcePaymentCoverage(booking, sessionId, res) {
   const payments = await Payment.find({ bookingId: booking._id }).lean();
@@ -331,43 +336,39 @@ async function enforcePaymentCoverage(booking, sessionId, res) {
     ordinal = idx + 1;
   }
 
-  // Back-compat: legacy single-session bookings that went through the atomic
-  // /payment/verify flow won't have Payment rows yet. Fall back to the legacy
-  // booking-level status check when no installments exist.
-  if (payments.length === 0) {
+  // Determine effective paid amount: verified + collected (physio-recorded offline cash)
+  let effectivePaid = 0;
+  let totalAmount = roundMoney2(Number(booking.totalAmount || booking.payment?.amount || 0));
+  let summary = null;
+
+  if (payments.length > 0) {
+    summary = deriveBookingPaymentSummary(booking, payments);
+    // Include collected (physio cash in hand) alongside verified so the milestone
+    // gate doesn't block session completion while admin verification is pending.
+    effectivePaid = roundMoney2((summary.totalPaid || 0) + (summary.totalCollected || 0));
+    totalAmount = summary.totalAmount;
+  } else {
+    // Legacy: no Payment rows — fall back to booking-level payment status
     const offline =
       booking.payment?.mode === 'offline' ||
       (booking.serviceType === 'home' && booking.homePlanPaymentMode === 'offline');
     const isPaid = offline
       ? booking.payment?.status === 'verified'
       : booking.payment?.status === 'paid';
-    const totalAmount = Number(booking.totalAmount || booking.payment?.amount || 0);
-    const totalPaidLegacy =
-      isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
-    const unlocked = computeUnlockedSessions(sessionsCount, totalPaidLegacy, totalAmount);
-    if (ordinal > unlocked) {
-      res.status(400).json({
-        message:
-          `Session #${ordinal} is locked. Currently unlocked: up to session #${unlocked} of ${sessionsCount}.`,
-        code: 'payment_coverage_insufficient',
-      });
-      return { ok: false };
-    }
-    return { ok: true, ordinal };
+    effectivePaid = isPaid && booking.paymentStatus === 'held' ? totalAmount : 0;
   }
 
-  const summary = deriveBookingPaymentSummary(booking, payments);
-  const unlocked = Number(summary.unlockedSessions || 0);
+  const paidPct = totalAmount > 0 ? effectivePaid / totalAmount : 0;
+  const required = getRequiredPctForSession(sessionsCount, ordinal);
 
-  if (ordinal > unlocked) {
-    const hint =
-      unlocked === 0
-        ? 'Collect at least one installment before marking any session.'
-        : `Currently unlocked: up to session #${unlocked} of ${sessionsCount}. Collect the next installment to open more.`;
+  if (paidPct + 1e-6 < required) {
+    const pctNeeded = Math.round(required * 100);
+    const pctPaid = Math.round(paidPct * 100);
+    const amtNeeded = Math.max(0, Math.round((required - paidPct) * totalAmount * 100) / 100);
     res.status(400).json({
-      message: `Session #${ordinal} is locked. ${hint}`,
-      code: 'payment_coverage_insufficient',
-      paymentSummary: summary,
+      message: `Session #${ordinal} requires at least ${pctNeeded}% payment (₹${amtNeeded} more needed). Currently ${pctPaid}% paid.`,
+      code: 'payment_milestone_not_met',
+      paymentSummary: summary ?? null,
     });
     return { ok: false };
   }
@@ -410,6 +411,20 @@ export async function completeSession(req, res, next) {
       entry.status = 'completed';
       entry.completedAt = new Date();
       entry.completedBy = physioId;
+
+      const sessionPayments = await Payment.find({
+        bookingId: booking._id,
+        sessionId: entry._id,
+        status: { $in: ['collected', 'verified'] },
+      }).lean();
+      const paymentAtCompletion = sessionPayments.reduce(
+        (s, p) => s + Number(p.amount || 0),
+        0,
+      );
+      entry.patientConfirmed = false;
+      entry.patientConfirmedAt = null;
+      entry.paymentAtCompletion = roundMoney2(paymentAtCompletion);
+
       rollupBookingSessionStatus(booking);
     } else if (hasSchedule) {
       return res.status(400).json({
@@ -425,6 +440,24 @@ export async function completeSession(req, res, next) {
     }
 
     await booking.save();
+
+    if (sessionId) {
+      const entry = findScheduleEntry(booking, sessionId);
+      const paymentAtCompletion = Number(entry?.paymentAtCompletion || 0);
+      const ordinal = gated.ordinal;
+      const patientUserId = booking.userId;
+      const bookingIdStr = String(booking._id);
+      fireBookingPush(async () => {
+        const label = ordinal ? `Session ${ordinal}` : 'Your session';
+        const payNote =
+          paymentAtCompletion > 0 ? ` ₹${paymentAtCompletion.toFixed(2)} collected.` : '';
+        await notifyExpoUsers([patientUserId], {
+          title: 'Session completed',
+          body: `${label} with your physio is done.${payNote} Please confirm.`,
+          data: { kind: 'session_completed', bookingId: bookingIdStr },
+        });
+      });
+    }
 
     if (booking.status === 'completed') {
       processReferralRewardOnBookingCompleted(booking).catch((e) =>
@@ -492,6 +525,41 @@ export async function markSessionNoShow(req, res, next) {
       .lean();
 
     return res.json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /physio/sos-alert
+ *  Body: { message: string, coords: { lat: number, lng: number } | null }
+ *  Authenticated physio only.
+ *  Fires a push notification to every admin user and returns 200 immediately.
+ */
+export async function sosAlert(req, res, next) {
+  try {
+    const { message, coords } = req.body ?? {};
+
+    // Build human-readable location string
+    const locationStr = coords?.lat != null
+      ? `${Number(coords.lat).toFixed(5)}, ${Number(coords.lng).toFixed(5)}`
+      : 'location unavailable';
+
+    const physioName = req.physio?.doc?.name ?? 'A physiotherapist';
+
+    // Find all admin user _ids for push targeting
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const adminIds = adminUsers.map(u => u._id);
+
+    // Fire push — non-blocking, never fails the request
+    fireBookingPush(() =>
+      notifyExpoUsers(adminIds, {
+        title: `🚨 SOS — ${physioName}`,
+        body: `${message ?? 'I need assistance at this location.'} · ${locationStr}`,
+        data: { type: 'sos_alert', physioId: req.physio.id, coords: coords ?? null },
+      })
+    );
+
+    return res.json({ ok: true });
   } catch (err) {
     next(err);
   }

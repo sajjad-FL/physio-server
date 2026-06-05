@@ -36,6 +36,7 @@ const documentUrlsSchema = new mongoose.Schema(
     registrationCertificate: { type: String, trim: true, default: '' },
     selfieWithId: { type: String, trim: true, default: '' },
     internshipCertificate: { type: String, trim: true, default: '' },
+    internshipCertificates: { type: [String], default: [] },
     councilRegistrationCertificate: { type: String, trim: true, default: '' },
     /** Signed copy of platform NDA (required when admin has uploaded a template). */
     signedNda: { type: String, trim: true, default: '' },

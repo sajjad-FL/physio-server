@@ -17,6 +17,7 @@ const paymentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    sessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
     physioId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Physiotherapist',
@@ -35,7 +36,7 @@ const paymentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'paid', 'collected', 'verified', 'rejected', 'refunded'],
+      enum: ['pending', 'paid', 'collected', 'verified', 'rejected', 'refunded', 'cancelled'],
       required: true,
       index: true,
     },
