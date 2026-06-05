@@ -1,4 +1,4 @@
-import { adminAuth } from './firebaseAdmin.js';
+import { getAdminAuth, isFirebaseConfigured } from './firebaseAdmin.js';
 
 /**
  * Verifies a Firebase Phone Auth idToken.
@@ -9,9 +9,12 @@ export async function verifyFirebasePhone(idToken) {
   if (!idToken || typeof idToken !== 'string') {
     throw new Error('Firebase ID token is required');
   }
+  if (!isFirebaseConfigured()) {
+    throw new Error('Phone verification is not configured on this server.');
+  }
   let decoded;
   try {
-    decoded = await adminAuth.verifyIdToken(idToken);
+    decoded = await getAdminAuth().verifyIdToken(idToken);
   } catch (e) {
     throw new Error('Phone verification expired or invalid. Please request a new OTP.');
   }
