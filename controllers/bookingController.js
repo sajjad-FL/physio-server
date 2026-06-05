@@ -300,6 +300,10 @@ function readAdminBookingsPagination(query) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function buildAdminBookingListFilter(query) {
   const parts = [];
   const { status, paymentStatus, assignment, serviceType, sessionStatus } = query || {};
@@ -329,10 +333,48 @@ function buildAdminBookingListFilter(query) {
   return { $and: parts };
 }
 
+async function buildAdminBookingSearchFilter(searchRaw) {
+  const search = String(searchRaw || '').trim();
+  if (!search) return null;
+
+  const rx = new RegExp(escapeRegex(search), 'i');
+  const or = [{ issue: rx }, { date: rx }, { timeSlot: rx }];
+  if (mongoose.isValidObjectId(search)) {
+    or.push({ _id: new mongoose.Types.ObjectId(search) });
+  }
+
+  const [userIds, physioIds] = await Promise.all([
+    User.find({ $or: [{ name: rx }, { phone: rx }, { email: rx }, { location: rx }] })
+      .select('_id')
+      .limit(200)
+      .lean(),
+    Physiotherapist.find({
+      $or: [{ name: rx }, { phone: rx }, { email: rx }, { specialization: rx }, { location: rx }],
+    })
+      .select('_id')
+      .limit(200)
+      .lean(),
+  ]);
+
+  if (userIds.length > 0) {
+    or.push({ userId: { $in: userIds.map((u) => u._id) } });
+  }
+  if (physioIds.length > 0) {
+    or.push({ physioId: { $in: physioIds.map((p) => p._id) } });
+  }
+
+  return { $or: or };
+}
+
 export async function listBookings(req, res, next) {
   try {
     const { page, limit, skip } = readAdminBookingsPagination(req.query);
-    const mongoFilter = buildAdminBookingListFilter(req.query);
+    const baseFilter = buildAdminBookingListFilter(req.query);
+    const searchFilter = await buildAdminBookingSearchFilter(req.query.search);
+    const mongoFilter =
+      searchFilter && Object.keys(baseFilter).length > 0
+        ? { $and: [baseFilter, searchFilter] }
+        : searchFilter || baseFilter;
 
     const [list, total] = await Promise.all([
       Booking.find(mongoFilter)

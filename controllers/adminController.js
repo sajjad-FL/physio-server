@@ -17,6 +17,10 @@ function readPagination(query) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Sidebar badges: actionable counts per admin section. */
 export async function getAdminNavCounts(_req, res, next) {
   try {
@@ -239,27 +243,109 @@ export async function resolveAdminDispute(req, res, next) {
 export async function listAdminUsers(req, res, next) {
   try {
     const withoutPhysio = String(req.query.withoutPhysio || '').toLowerCase() === 'true';
+    const wantsPaginated =
+      req.query.page !== undefined ||
+      req.query.limit !== undefined ||
+      req.query.search !== undefined ||
+      req.query.role !== undefined ||
+      req.query.linkedPhysio !== undefined;
     const filter = {};
     if (withoutPhysio) {
       filter.$or = [{ physioId: null }, { physioId: { $exists: false } }];
     }
+    const role = String(req.query.role || '').trim();
+    if (['user', 'physio', 'admin'].includes(role)) {
+      filter.role = role;
+    }
+    const linkedPhysio = String(req.query.linkedPhysio || '').toLowerCase();
+    if (linkedPhysio === 'true') {
+      filter.physioId = { $type: 'objectId' };
+    } else if (linkedPhysio === 'false') {
+      filter.$or = [{ physioId: null }, { physioId: { $exists: false } }];
+    }
+    const search = String(req.query.search || '').trim();
+    if (search) {
+      const rx = new RegExp(escapeRegex(search), 'i');
+      filter.$and = [
+        ...(filter.$and || []),
+        { $or: [{ name: rx }, { phone: rx }, { email: rx }, { location: rx }] },
+      ];
+    }
 
-    const list = await User.find(filter)
-      .select('name phone location role physioId coordinates createdAt')
-      .sort({ createdAt: -1 })
-      .lean();
+    const { page, limit, skip } = readPagination(req.query);
+    const query = User.find(filter)
+      .select('name email phone location role physioId coordinates isProfileComplete createdAt')
+      .sort({ createdAt: -1 });
+    if (wantsPaginated) {
+      query.skip(skip).limit(limit);
+    }
+
+    const [list, total] = await Promise.all([
+      query.lean(),
+      wantsPaginated ? User.countDocuments(filter) : Promise.resolve(0),
+    ]);
 
     const mapped = list.map((u) => ({
       _id: u._id,
       name: u.name,
+      email: u.email,
       phone: u.phone,
       location: u.location,
       role: u.role || 'user',
       physioId: u.physioId,
       isLinkedPhysio: Boolean(u.physioId),
+      isProfileComplete: Boolean(u.isProfileComplete),
+      createdAt: u.createdAt,
     }));
 
-    return res.json(mapped);
+    if (!wantsPaginated) {
+      return res.json(mapped);
+    }
+
+    return res.json({
+      data: mapped,
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteAdminUser(req, res, next) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
+    const user = await User.findById(id).select('role physioId').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (user.role === 'admin') {
+      return res.status(403).json({ message: 'Admin users cannot be deleted' });
+    }
+
+    if (user.physioId) {
+      return res
+        .status(409)
+        .json({ message: 'Delete the linked physiotherapist profile before deleting this user' });
+    }
+
+    const hasActiveBookings = await Booking.exists({
+      userId: id,
+      $or: [
+        { status: { $ne: 'completed' } },
+        { paymentStatus: { $in: ['held', 'pending'] } },
+      ],
+    });
+    if (hasActiveBookings) {
+      return res.status(409).json({ message: 'Cannot delete user with active bookings' });
+    }
+
+    await User.findByIdAndDelete(id);
+    return res.json({ ok: true, deletedId: id });
   } catch (err) {
     next(err);
   }
@@ -358,9 +444,42 @@ export async function createPhysioFromUser(req, res, next) {
 export async function listAdminPhysios(_req, res, next) {
   try {
     const { page, limit, skip } = readPagination(_req.query);
+    const filter = {};
+    const search = String(_req.query.search || '').trim();
+    if (search) {
+      const rx = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [
+        { name: rx },
+        { phone: rx },
+        { email: rx },
+        { specialization: rx },
+        { location: rx },
+      ];
+    }
+    const verificationStatus = String(_req.query.verificationStatus || '').trim();
+    if (['pending', 'approved', 'rejected'].includes(verificationStatus)) {
+      filter.verificationStatus = verificationStatus;
+    }
+    const availability = String(_req.query.availability || '').toLowerCase();
+    if (availability === 'true' || availability === 'false') {
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { isAvailable: availability === 'true' },
+            { availability: availability === 'true' },
+          ],
+        },
+      ];
+    }
+    const serviceType = String(_req.query.serviceType || '').trim();
+    if (['online', 'home', 'both'].includes(serviceType)) {
+      filter.serviceType = serviceType;
+    }
+
     const [list, total] = await Promise.all([
-      Physiotherapist.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      Physiotherapist.countDocuments(),
+      Physiotherapist.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Physiotherapist.countDocuments(filter),
     ]);
     const data = list.map((p) => ({
       ...p,

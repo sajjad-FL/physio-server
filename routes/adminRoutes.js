@@ -6,6 +6,7 @@ import {
   listDisputes,
   resolveAdminDispute,
   listAdminUsers,
+  deleteAdminUser,
   createPhysioFromUser,
   listAdminPhysios,
   getAdminPhysioById,
@@ -40,6 +41,7 @@ const router = Router();
 
 router.get('/nav-counts', requireAdmin, getAdminNavCounts);
 router.get('/users', requireAdmin, listAdminUsers);
+router.delete('/users/:id', requireAdmin, deleteAdminUser);
 router.post('/physios/from-user', requireAdmin, createPhysioFromUser);
 router.get('/physios', requireAdmin, listAdminPhysios);
 router.get('/physio/pending', requireAdmin, listPendingPhysios);
