@@ -10,8 +10,8 @@ import { parseAddressPayload } from './profileController.js';
 import { normalizePatientGender } from '../utils/patientGender.js';
 import { normalizeReferralCodeInput } from '../utils/referralCode.js';
 import { processReferralSignupBonus } from '../services/referralSignupBonus.js';
-import { verifyFirebasePhone } from '../utils/verifyFirebasePhone.js';
-
+import { sendAuthKeyOtp, isAuthKeyConfigured } from '../utils/authKeyOtp.js';
+import { OTP_LENGTH, OTP_REGEX } from '../constants/otp.js';
 
 const OTP_TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
@@ -21,7 +21,7 @@ const OTP_PURPOSE_PASSWORD_RESET = 'password_reset';
 const OTP_PURPOSE_DEBUG_LOGIN = 'debug_login';
 const OTP_PURPOSE_SIGNUP = 'signup';
 const BCRYPT_ROUNDS = 10;
-const MIN_PASSWORD_LEN = 8;
+const MIN_PASSWORD_LEN = 6;
 
 if (!process.env.JWT_SECRET) {
   console.warn('[auth] JWT_SECRET is not set; using dev-secret.');
@@ -29,7 +29,6 @@ if (!process.env.JWT_SECRET) {
 
 startOtpCleanupInterval({ intervalMinutes: 5 });
 
-/** Signup DOB: must be 18–120 years, not in the future (aligns with patient booking validation). */
 function parseRegisterDob(input) {
   if (input == null || input === '') return null;
   const s = String(input).trim();
@@ -53,17 +52,28 @@ export function signUserToken(user, physioIdOverride) {
       ...(physioId ? { physioId } : {}),
     },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '7d' },
   );
 }
 
-const SIGNUP_OTP_HELP =
-  'Request a new code with “Send verification code” if it expired. With DEBUG_OTP=true, the code is returned in the API response and server logs (local dev only).';
+function buildOtpSendResponse(message, otp) {
+  if (DEBUG_OTP) {
+    return { message, otp };
+  }
+  return { message };
+}
 
-/**
- * Send a 6-digit OTP for patient signup (number must not already be registered).
- * Integrate SMS in production; until then use DEBUG_OTP for local testing.
- */
+async function deliverOtpSms(normalizedPhone, otp, logLabel) {
+  if (DEBUG_OTP) {
+    console.log(`[debug][${logLabel}] ${normalizedPhone} -> ${otp}`);
+    return;
+  }
+  if (!isAuthKeyConfigured()) {
+    throw new Error('SMS OTP is not configured on this server.');
+  }
+  await sendAuthKeyOtp({ mobile: normalizedPhone, otp });
+}
+
 export async function sendSignupOtp(req, res, next) {
   try {
     const pv = validateIndianMobile(req.body?.phone);
@@ -82,76 +92,53 @@ export async function sendSignupOtp(req, res, next) {
       purpose: OTP_PURPOSE_SIGNUP,
     });
 
-    if (DEBUG_OTP) {
-      console.log('[debug][signup-otp] ' + normalizedPhone + ' -> ' + otp);
-      return res.json({
-        message: 'Verification code issued (DEBUG_OTP). Enter it below — in production this would be sent by SMS.',
-        otp,
-      });
+    try {
+      await deliverOtpSms(normalizedPhone, otp, 'signup-otp');
+    } catch (e) {
+      return res.status(502).json({ message: e.message || 'Could not send verification code' });
     }
 
-    return res.json({
-      message:
-        'If SMS is configured, a verification code was sent to this number. Enter it below within a few minutes. ' +
-        SIGNUP_OTP_HELP,
-    });
+    const message = DEBUG_OTP
+      ? `Verification code issued (DEBUG_OTP). Enter the ${OTP_LENGTH}-digit code below.`
+      : `A ${OTP_LENGTH}-digit verification code was sent to this number. Enter it below within a few minutes.`;
+
+    return res.json(buildOtpSendResponse(message, otp));
   } catch (err) {
     next(err);
   }
 }
 
-/**
- * Patient signup: phone (verified via OTP) + password + name.
- * Full profile (DOB, gender, location) may be sent in one step (web); if omitted, user completes profile later.
- */
 export async function registerPatient(req, res, next) {
   try {
-    let pv;
-    const firebaseIdToken = req.body?.firebaseIdToken;
-    if (firebaseIdToken) {
-      let fbPhone;
-      try {
-        fbPhone = await verifyFirebasePhone(firebaseIdToken);
-      } catch (e) {
-        return res.status(400).json({ message: e.message });
-      }
-      pv = validateIndianMobile(fbPhone);
-      if (!pv.valid) {
-        return res.status(400).json({ message: 'Phone number from Firebase token is not a valid Indian mobile number.' });
-      }
-    } else {
-      pv = validateIndianMobile(req.body?.phone);
-      if (!pv.valid) {
-        return res.status(400).json({ message: pv.message });
-      }
+    const pv = validateIndianMobile(req.body?.phone);
+    if (!pv.valid) {
+      return res.status(400).json({ message: pv.message });
     }
 
-    if (!firebaseIdToken) {
-      const otpRaw = String(req.body?.otp || '').trim();
-      if (!otpRaw) {
-        return res.status(400).json({ message: 'Verification code is required. Tap “Send verification code” first.' });
-      }
-      if (!/^\d{6}$/.test(otpRaw)) {
-        return res.status(400).json({ message: 'Verification code must be 6 digits' });
-      }
+    const otpRaw = String(req.body?.otp || '').trim();
+    if (!otpRaw) {
+      return res.status(400).json({ message: 'Verification code is required. Request a code first.' });
+    }
+    if (!OTP_REGEX.test(otpRaw)) {
+      return res.status(400).json({ message: `Verification code must be ${OTP_LENGTH} digits` });
+    }
 
-      const otpResult = verifyOtpAttempt({
-        phone: pv.normalized,
-        otp: otpRaw,
-        maxAttempts: OTP_MAX_ATTEMPTS,
-        purpose: OTP_PURPOSE_SIGNUP,
-      });
-      if (!otpResult.ok) {
-        if (otpResult.reason === 'locked') {
-          return res.status(429).json({ message: 'Too many incorrect attempts. Request a new verification code.' });
-        }
-        if (otpResult.reason === 'mismatch') {
-          return res.status(400).json({ message: 'Incorrect verification code' });
-        }
-        return res.status(400).json({
-          message: 'Code expired or invalid. Request a new verification code.',
-        });
+    const otpResult = verifyOtpAttempt({
+      phone: pv.normalized,
+      otp: otpRaw,
+      maxAttempts: OTP_MAX_ATTEMPTS,
+      purpose: OTP_PURPOSE_SIGNUP,
+    });
+    if (!otpResult.ok) {
+      if (otpResult.reason === 'locked') {
+        return res.status(429).json({ message: 'Too many incorrect attempts. Request a new verification code.' });
       }
+      if (otpResult.reason === 'mismatch') {
+        return res.status(400).json({ message: 'Incorrect verification code' });
+      }
+      return res.status(400).json({
+        message: 'Code expired or invalid. Request a new verification code.',
+      });
     }
 
     const password = String(req.body?.password || '');
@@ -166,20 +153,13 @@ export async function registerPatient(req, res, next) {
 
     const dobRaw = req.body?.dob;
     const addressParsed = parseAddressPayload(req.body);
-
     const genderNormalized = normalizePatientGender(req.body?.gender);
     const hasGenderInput = Boolean(genderNormalized);
-
     const dobParsed = parseRegisterDob(dobRaw);
     const hasValidDobInput = dobParsed != null;
-
     const hasLocationInput =
       addressParsed.provided && String(addressParsed.location || '').trim().length >= 2;
 
-    /**
-     * Quick signup: omit DOB, gender, and location (or send none that parse as valid).
-     * Full signup at register: must send all three together (avoids stray fields like `gender: "null"` + dob triggering half-baked validation).
-     */
     const profileParts = [hasValidDobInput, hasGenderInput, hasLocationInput].filter(Boolean).length;
     if (profileParts !== 0 && profileParts !== 3) {
       return res.status(400).json({
@@ -189,7 +169,6 @@ export async function registerPatient(req, res, next) {
     }
 
     const wantsFullProfile = profileParts === 3;
-
     let dob;
     let locText;
     let addressValue;
@@ -286,9 +265,6 @@ export async function registerPatient(req, res, next) {
   }
 }
 
-/**
- * Dev only (DEBUG_OTP=true): issue a 6-digit code; paste it as the password on /auth/login.
- */
 export async function debugSendLoginOtp(req, res, next) {
   try {
     if (!DEBUG_OTP) {
@@ -309,7 +285,7 @@ export async function debugSendLoginOtp(req, res, next) {
     });
     console.log('[debug][login-otp] ' + normalizedPhone + ' -> ' + otp);
     return res.json({
-      message: 'Use this 6-digit code as your password on the login form (DEBUG_OTP only).',
+      message: `Use this ${OTP_LENGTH}-digit code as your password on the login form (DEBUG_OTP only).`,
       otp,
     });
   } catch (err) {
@@ -317,9 +293,6 @@ export async function debugSendLoginOtp(req, res, next) {
   }
 }
 
-/**
- * Login: phone + password. When DEBUG_OTP=true, a 6-digit code from POST /auth/debug-login-otp also works (for users without password or quick local testing).
- */
 export async function loginWithPassword(req, res, next) {
   try {
     const pv = validateIndianMobile(req.body?.phone);
@@ -331,7 +304,7 @@ export async function loginWithPassword(req, res, next) {
       return res.status(400).json({ message: 'Password is required' });
     }
 
-    if (DEBUG_OTP && /^\d{6}$/.test(password)) {
+    if (DEBUG_OTP && OTP_REGEX.test(password)) {
       const otpResult = verifyOtpAttempt({
         phone: pv.normalized,
         otp: password,
@@ -369,9 +342,9 @@ export async function loginWithPassword(req, res, next) {
       return res.status(401).json({
         code: 'LOGIN_PASSWORD_NOT_SET',
         message:
-          'This number is already on file, but no sign-in password was set yet (for example, an older OTP-only signup). Use Forgot password to choose a password, then sign in.' +
+          'This number is already on file, but no sign-in password was set yet. Use Forgot password to choose a password, then sign in.' +
           (DEBUG_OTP
-            ? ' With DEBUG_OTP enabled, you can use POST /auth/debug-login-otp for a 6-digit code and enter it as the password (local dev only).'
+            ? ` With DEBUG_OTP enabled, you can use POST /auth/debug-login-otp for a ${OTP_LENGTH}-digit code and enter it as the password (local dev only).`
             : ''),
       });
     }
@@ -380,7 +353,7 @@ export async function loginWithPassword(req, res, next) {
     if (!match) {
       return res.status(401).json({
         code: 'LOGIN_WRONG_PASSWORD',
-        message: 'That password doesn’t match this number. Try again, or use Forgot password if you’re unsure.',
+        message: "That password doesn't match this number. Try again, or use Forgot password if you're unsure.",
       });
     }
 
@@ -397,9 +370,6 @@ export async function loginWithPassword(req, res, next) {
 
 const GENERIC_FORGOT_MSG = 'If an account exists for this number, a verification code has been sent.';
 
-/**
- * Send OTP for password reset (user must exist).
- */
 export async function forgotPassword(req, res, next) {
   try {
     const pv = validateIndianMobile(req.body?.phone);
@@ -418,71 +388,57 @@ export async function forgotPassword(req, res, next) {
       purpose: OTP_PURPOSE_PASSWORD_RESET,
     });
 
-    if (DEBUG_OTP) {
-      console.log('[debug][forgot-password-otp] ' + normalizedPhone + ' -> ' + otp);
-      return res.json({ message: GENERIC_FORGOT_MSG, otp });
+    try {
+      await deliverOtpSms(normalizedPhone, otp, 'forgot-password-otp');
+    } catch (e) {
+      return res.status(502).json({ message: e.message || 'Could not send verification code' });
     }
 
-    return res.json({ message: GENERIC_FORGOT_MSG });
+    return res.json(buildOtpSendResponse(GENERIC_FORGOT_MSG, otp));
   } catch (err) {
     next(err);
   }
 }
 
-/**
- * Verify OTP for password reset (does not log in). Next step: POST /auth/reset-password
- */
 export async function verifyPasswordResetOtp(req, res, next) {
   try {
-    const firebaseIdToken = req.body?.firebaseIdToken;
-    let normalizedPhone;
-    if (firebaseIdToken) {
-      let fbPhone;
-      try {
-        fbPhone = await verifyFirebasePhone(firebaseIdToken);
-      } catch (e) {
-        return res.status(400).json({ message: e.message });
-      }
-      const pv = validateIndianMobile(fbPhone);
-      if (!pv.valid) {
-        return res.status(400).json({ message: 'Phone number from Firebase token is not a valid Indian mobile number.' });
-      }
-      normalizedPhone = pv.normalized;
-    } else {
-      const otp = String(req.body?.otp || '').trim();
-      const pv = validateIndianMobile(req.body?.phone);
-      if (!pv.valid) {
-        return res.status(400).json({ message: pv.message });
-      }
-      if (!otp) return res.status(400).json({ message: 'OTP is required' });
-      if (!/^\d{6}$/.test(otp)) return res.status(400).json({ message: 'OTP must be 6 digits' });
-      const result = verifyOtpAttempt({
-        phone: pv.normalized,
-        otp,
-        maxAttempts: OTP_MAX_ATTEMPTS,
-        purpose: OTP_PURPOSE_PASSWORD_RESET,
-      });
-      if (!result.ok) {
-        if (result.reason === 'locked') return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
-        if (result.reason === 'mismatch') return res.status(400).json({ message: 'Incorrect code' });
-        return res.status(400).json({ message: 'Code expired or invalid. Please request a new one.' });
-      }
-      normalizedPhone = result.phone;
+    const otp = String(req.body?.otp || '').trim();
+    const pv = validateIndianMobile(req.body?.phone);
+    if (!pv.valid) {
+      return res.status(400).json({ message: pv.message });
     }
-    const user = await findUserByNormalizedDigits(normalizedPhone);
+    if (!otp) return res.status(400).json({ message: 'OTP is required' });
+    if (!OTP_REGEX.test(otp)) {
+      return res.status(400).json({ message: `OTP must be ${OTP_LENGTH} digits` });
+    }
+
+    const result = verifyOtpAttempt({
+      phone: pv.normalized,
+      otp,
+      maxAttempts: OTP_MAX_ATTEMPTS,
+      purpose: OTP_PURPOSE_PASSWORD_RESET,
+    });
+    if (!result.ok) {
+      if (result.reason === 'locked') {
+        return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
+      }
+      if (result.reason === 'mismatch') {
+        return res.status(400).json({ message: 'Incorrect code' });
+      }
+      return res.status(400).json({ message: 'Code expired or invalid. Please request a new one.' });
+    }
+
+    const user = await findUserByNormalizedDigits(result.phone);
     if (!user) {
       return res.status(400).json({ message: 'No account found for this number' });
     }
-    grantPasswordReset(normalizedPhone);
+    grantPasswordReset(result.phone);
     return res.json({ message: 'Code verified. You can set a new password.' });
   } catch (err) {
     next(err);
   }
 }
 
-/**
- * Set new password after successful verify-password-reset OTP.
- */
 export async function resetPassword(req, res, next) {
   try {
     const pv = validateIndianMobile(req.body?.phone);

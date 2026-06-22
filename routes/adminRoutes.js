@@ -36,6 +36,11 @@ import {
   adminRejectPayment,
 } from '../controllers/installmentsController.js';
 import { getAdminPlatformSettings, patchAdminPlatformSettings, uploadPhysioNdaTemplate } from '../controllers/platformSettingsController.js';
+import {
+  getAdminPricingSettingsHandler,
+  patchAdminPricingSettingsHandler,
+  resetAdminPricingSettingsHandler,
+} from '../controllers/pricingSettingsController.js';
 
 const router = Router();
 
@@ -69,5 +74,8 @@ router.post('/finance/settle-commission', requireAdmin, postSettleCommission);
 router.get('/platform/settings', requireAdmin, getAdminPlatformSettings);
 router.patch('/platform/settings', requireAdmin, patchAdminPlatformSettings);
 router.post('/platform/physio-nda', requireAdmin, uploadPhysioNdaTemplate);
+router.get('/pricing/settings', requireAdmin, getAdminPricingSettingsHandler);
+router.patch('/pricing/settings', requireAdmin, patchAdminPricingSettingsHandler);
+router.post('/pricing/settings/reset', requireAdmin, resetAdminPricingSettingsHandler);
 
 export default router;

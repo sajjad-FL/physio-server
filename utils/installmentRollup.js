@@ -1,6 +1,6 @@
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
-import { PLAN_MILESTONES } from '../constants/planMilestones.js';
+import { getPlanMilestonesSync } from './pricingConfig.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -133,7 +133,7 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
     : (effectivePaid >= totalAmount ? sessionsCount : 0);
 
   const effectivePct = totalAmount > 0 ? effectivePaid / totalAmount : 0;
-  const milestones = PLAN_MILESTONES[sessionsCount] ?? null;
+  const milestones = getPlanMilestonesSync(sessionsCount);
   const milestoneStatus = milestones
     ? milestones.map((m) => ({
         bySession: m.bySession,

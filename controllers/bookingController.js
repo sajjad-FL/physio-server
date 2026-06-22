@@ -4,7 +4,6 @@ import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
-import { distanceKm } from '../utils/geo.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import {
@@ -24,6 +23,12 @@ import {
   findUserIdForPhysioProfile,
 } from '../utils/expoPush.js';
 import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
+import {
+  computeDistanceSurcharge,
+  getDefaultBookingAmountRupeesSync,
+  getAllowedPlanSessionCountsSync,
+  getHomePlanMaxDiscountPercentSync,
+} from '../utils/pricingConfig.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -48,14 +53,11 @@ const PHYSIO_SLOT_CONFLICT_MSG =
   'This physiotherapist already has another booking in that time slot';
 const SLOT_AT_PLATFORM_CAPACITY_MSG =
   'All available physiotherapists are already booked for this time slot';
-const DISTANCE_SURCHARGE_BASE_KM = 5;
-const DISTANCE_SURCHARGE_PER_KM = 5;
+const ALLOWED_SERVICE_TYPES = ['online', 'home'];
 
 function defaultBookingAmountRupees() {
-  const n = Number(process.env.DEFAULT_BOOKING_AMOUNT_RUPEES);
-  return Number.isFinite(n) && n > 0 ? n : 500;
+  return getDefaultBookingAmountRupeesSync();
 }
-const ALLOWED_SERVICE_TYPES = ['online', 'home'];
 
 function readPagination(query) {
   const page = Math.max(1, Number(query?.page) || 1);
@@ -89,29 +91,6 @@ function parseLatLng(coords) {
   const lng = Number(coords.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   return { lat, lng };
-}
-
-function computeDistanceSurcharge(patientCoords, physioCoords) {
-  const patient = parseLatLng(patientCoords);
-  const physio = parseLatLng(physioCoords);
-  if (!patient || !physio) {
-    return {
-      distanceKmAtAssign: null,
-      distanceExtraKm: 0,
-      distanceSurchargePerKm: 0,
-      distanceSurchargeAmount: 0,
-    };
-  }
-  const km = distanceKm(patient.lat, patient.lng, physio.lat, physio.lng);
-  const floored = Math.floor(km);
-  const extraKm = Math.max(0, floored - DISTANCE_SURCHARGE_BASE_KM);
-  const surcharge = extraKm * DISTANCE_SURCHARGE_PER_KM;
-  return {
-    distanceKmAtAssign: km,
-    distanceExtraKm: extraKm,
-    distanceSurchargePerKm: extraKm > 0 ? DISTANCE_SURCHARGE_PER_KM : 0,
-    distanceSurchargeAmount: surcharge,
-  };
 }
 
 function parseSchedule(schedule) {
@@ -812,8 +791,11 @@ export async function createHomePlan(req, res, next) {
     if (!Number.isInteger(sessions) || sessions < 1) {
       return res.status(400).json({ message: 'sessions must be an integer greater than 0' });
     }
-    if (![7, 15, 30].includes(sessions)) {
-      return res.status(400).json({ message: 'sessions must be one of 7, 15, or 30' });
+    const allowedSessions = getAllowedPlanSessionCountsSync();
+    if (!allowedSessions.includes(sessions)) {
+      return res.status(400).json({
+        message: `sessions must be one of ${allowedSessions.join(', ')}`,
+      });
     }
     if (!schedule || schedule.length !== sessions) {
       return res.status(400).json({ message: 'schedule must match the number of sessions' });
@@ -830,8 +812,11 @@ export async function createHomePlan(req, res, next) {
       });
     }
 
-    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 15) {
-      return res.status(400).json({ message: 'discountPercent must be between 0 and 15' });
+    const maxDiscount = getHomePlanMaxDiscountPercentSync();
+    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > maxDiscount) {
+      return res.status(400).json({
+        message: `discountPercent must be between 0 and ${maxDiscount}`,
+      });
     }
 
     /** Same distance surcharge as at assignment, applied per home visit (each session). */

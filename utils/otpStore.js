@@ -1,9 +1,12 @@
 import { normalizeIndianPhone } from './phoneIndia.js';
+import { OTP_LENGTH } from '../constants/otp.js';
 
 const store = new Map();
 
 function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  const min = 10 ** (OTP_LENGTH - 1);
+  const max = 10 ** OTP_LENGTH - 1;
+  return String(Math.floor(min + Math.random() * (max - min + 1)));
 }
 
 function now() {

@@ -10,6 +10,7 @@ import {
   creditPhysioWalletOnline,
   roundMoney2,
 } from '../utils/marketplacePayment.js';
+import { getDefaultBookingAmountRupeesSync } from '../utils/pricingConfig.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
 import {
   getBookablePhysioCount,
@@ -31,8 +32,7 @@ const SLOT_AT_PLATFORM_CAPACITY_MSG =
   'All available physiotherapists are already booked for this time slot';
 
 function defaultBookingAmountRupees() {
-  const n = Number(process.env.DEFAULT_BOOKING_AMOUNT_RUPEES);
-  return Number.isFinite(n) && n > 0 ? n : 500;
+  return getDefaultBookingAmountRupeesSync();
 }
 
 /** Gross rupees for online checkout: physio fixed fee when set, else platform default. */

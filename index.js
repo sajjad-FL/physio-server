@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { connectDB } from './config/db.js';
+import { warmPricingCache } from './utils/pricingConfig.js';
 import Booking from './models/Booking.js';
 import { uploadsRoot } from './config/upload.js';
 import bookingRoutes from './routes/bookingRoutes.js';
@@ -100,6 +101,7 @@ app.use((err, _req, res, _next) => {
 
 async function main() {
   await connectDB();
+  await warmPricingCache();
   // Drops legacy unique { date, timeSlot } (and any other indexes not declared on the schema)
   // so multiple unassigned patients can share the same calendar slot until a physio is assigned.
   try {
