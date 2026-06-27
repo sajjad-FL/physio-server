@@ -115,6 +115,13 @@ export async function uploadOnboardingFiles(req, res, next) {
       });
     }
 
+    if (internshipCertificateFiles.length > 10) {
+      return res.status(400).json({
+        message: 'Too many internship files',
+        errors: { internshipCertificate: 'You can upload up to 10 internship certificates at once' },
+      });
+    }
+
     const $set = { ...pendingVerificationUpdate() };
     const newDocs = [];
 

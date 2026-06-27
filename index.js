@@ -22,6 +22,7 @@ import reviewRoutes from './routes/reviewRoutes.js';
 import platformRoutes from './routes/platformRoutes.js';
 import seoRoutes from './routes/seoRoutes.js';
 import referralRoutes from './routes/referralRoutes.js';
+import shopRoutes from './routes/shopRoutes.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -88,6 +89,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/platform', platformRoutes);
 app.use('/api/seo', seoRoutes);
 app.use('/api/referral', referralRoutes);
+app.use('/api/shop', shopRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

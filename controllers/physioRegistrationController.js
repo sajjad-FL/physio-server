@@ -150,6 +150,8 @@ function collectValidationErrors(body, files) {
     } else {
       errors.internshipCertificate = 'Upload at least one internship certificate';
     }
+  } else if (internshipCertificates.length > 10) {
+    errors.internshipCertificate = 'You can upload up to 10 internship certificates at once';
   }
   if (!isValidIdProofType(idProofType)) {
     errors.idProofType = 'Select GOVT ID type (Aadhaar, PAN, Passport, or Voter ID)';
@@ -290,7 +292,6 @@ export async function registerPhysio(req, res, next) {
           selfieWithId: '',
           internshipCertificate: '',
           internshipCertificates: [],
-          councilRegistrationCertificate: '',
           signedNda: '',
         },
         avatar: '',

@@ -176,6 +176,7 @@ export function validateSubmitReady(p, opts = {}) {
 
   const cert = hasUrl(q.certificateUrl);
   const du = p.documentUrls || {};
+  if (!hasUrl(p.avatar)) errors.avatar = 'Upload your profile photo';
   const internshipUrls = Array.isArray(du.internshipCertificates)
     ? du.internshipCertificates.filter((u) => hasUrl(u))
     : hasUrl(du.internshipCertificate)

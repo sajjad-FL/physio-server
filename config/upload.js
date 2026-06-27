@@ -39,7 +39,6 @@ const ONBOARDING_FILE_FIELDS = new Set([
   'registrationCertificate',
   'selfieWithId',
   'internshipCertificate',
-  'councilRegistrationCertificate',
 ]);
 
 function onboardingFileFilter(_req, file, cb) {
@@ -89,3 +88,39 @@ export const uploadAvatar = multer({
     else cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
   },
 });
+
+const productsDir = path.join(uploadsRoot, 'products');
+if (!fs.existsSync(productsDir)) {
+  fs.mkdirSync(productsDir, { recursive: true });
+}
+
+const productImageStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    cb(null, productsDir);
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const safeExt = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext) ? ext : '.jpg';
+    cb(null, `product-${Date.now()}${safeExt}`);
+  },
+});
+
+export const uploadProductImage = multer({
+  storage: isS3Configured() ? multer.memoryStorage() : productImageStorage,
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+  fileFilter(_req, file, cb) {
+    const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
+    if (ok) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
+  },
+});
+
+export const uploadProductImages = multer({
+  storage: isS3Configured() ? multer.memoryStorage() : productImageStorage,
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+  fileFilter(_req, file, cb) {
+    const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
+    if (ok) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
+  },
+}).array('images', 6);

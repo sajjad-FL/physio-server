@@ -41,6 +41,22 @@ import {
   patchAdminPricingSettingsHandler,
   resetAdminPricingSettingsHandler,
 } from '../controllers/pricingSettingsController.js';
+import {
+  listAdminProducts,
+  getAdminProductById,
+  createAdminProduct,
+  patchAdminProduct,
+  deleteAdminProduct,
+  reorderAdminProducts,
+  deleteAdminProductImage,
+} from '../controllers/productController.js';
+import {
+  listAdminShopOrders,
+  getAdminShopOrderById,
+  patchAdminShopOrderStatus,
+  cancelAdminShopOrder,
+} from '../controllers/shopOrderController.js';
+import { uploadProductImages } from '../config/upload.js';
 
 const router = Router();
 
@@ -77,5 +93,16 @@ router.post('/platform/physio-nda', requireAdmin, uploadPhysioNdaTemplate);
 router.get('/pricing/settings', requireAdmin, getAdminPricingSettingsHandler);
 router.patch('/pricing/settings', requireAdmin, patchAdminPricingSettingsHandler);
 router.post('/pricing/settings/reset', requireAdmin, resetAdminPricingSettingsHandler);
+router.get('/products', requireAdmin, listAdminProducts);
+router.post('/products', requireAdmin, uploadProductImages, createAdminProduct);
+router.patch('/products/reorder', requireAdmin, reorderAdminProducts);
+router.get('/products/:id', requireAdmin, getAdminProductById);
+router.patch('/products/:id', requireAdmin, uploadProductImages, patchAdminProduct);
+router.delete('/products/:id/images/:index', requireAdmin, deleteAdminProductImage);
+router.delete('/products/:id', requireAdmin, deleteAdminProduct);
+router.get('/shop/orders', requireAdmin, listAdminShopOrders);
+router.get('/shop/orders/:id', requireAdmin, getAdminShopOrderById);
+router.patch('/shop/orders/:id/status', requireAdmin, patchAdminShopOrderStatus);
+router.patch('/shop/orders/:id/cancel', requireAdmin, cancelAdminShopOrder);
 
 export default router;
