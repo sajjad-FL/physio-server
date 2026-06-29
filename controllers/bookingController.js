@@ -159,7 +159,7 @@ export async function createBooking(req, res, next) {
     if (normalizedServiceType === 'online') {
       return res.status(400).json({
         message:
-          'Online consultations are paid first, then confirmed. Use Book a session (/book) or POST /bookings/online-checkout/start.',
+          'Online consultations are paid first, then confirmed. Use Book an appointment (/book) or POST /bookings/online-checkout/start.',
       });
     }
 
