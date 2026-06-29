@@ -34,8 +34,10 @@ export function validateBasicSection(basic) {
   else if (loc.length < 2) errors.location = 'Location must be at least 2 characters';
   else if (loc.length > 300) errors.location = 'Location is too long';
 
-  if (basic?.dob != null && String(basic.dob).trim()) {
-    const d = new Date(basic.dob);
+  const dobStr = String(basic?.dob ?? '').trim();
+  if (!dobStr) errors.dob = 'Date of birth is required';
+  else {
+    const d = new Date(dobStr);
     if (Number.isNaN(d.getTime())) errors.dob = 'Invalid date of birth';
     else {
       const now = new Date();
@@ -47,7 +49,8 @@ export function validateBasicSection(basic) {
   }
 
   const gender = String(basic?.gender ?? '').trim();
-  if (gender && !['female', 'male', 'other', 'prefer_not_say'].includes(gender)) {
+  if (!gender) errors.gender = 'Gender is required';
+  else if (!['female', 'male', 'other', 'prefer_not_say'].includes(gender)) {
     errors.gender = 'Select a valid option';
   }
 
@@ -91,7 +94,7 @@ export function validateQualificationSection(qualification) {
 /**
  * @param {Record<string, unknown>} practice
  */
-export function validatePracticeSection(practice) {
+export function validatePracticeSection(practice, options = {}) {
   const errors = {};
   if (practice?.experience == null || practice.experience === '') {
     errors.experience = 'Experience (years) is required';
@@ -102,9 +105,13 @@ export function validatePracticeSection(practice) {
   }
 
   const spec = String(practice?.specialization ?? '').trim();
-  if (!spec) errors.specialization = 'Specialization is required';
-  else if (spec.length < 2) errors.specialization = 'Specialization must be at least 2 characters';
-  else if (spec.length > 120) errors.specialization = 'Specialization is too long';
+  if (!spec && !options.specializationOptional) {
+    errors.specialization = 'Specialization is required';
+  } else if (spec && spec.length < 2) {
+    errors.specialization = 'Specialization must be at least 2 characters';
+  } else if (spec.length > 120) {
+    errors.specialization = 'Specialization is too long';
+  }
 
   const st = practice?.serviceType;
   if (st != null && st !== '' && !['online', 'home', 'both'].includes(st)) {

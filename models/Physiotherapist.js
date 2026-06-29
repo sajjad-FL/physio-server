@@ -93,7 +93,7 @@ const physiotherapistSchema = new mongoose.Schema(
       default: 'both',
     },
     serviceAreas: { type: [String], default: [] },
-    specialization: { type: String, required: true, trim: true },
+    specialization: { type: String, trim: true, default: '' },
     experience: { type: Number, min: 0, default: 0 },
     pricePerSession: { type: Number, min: 0, default: 500 },
     /** Upper bound when listing a fee range; omit or null for a single fixed fee. */

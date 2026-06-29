@@ -95,12 +95,15 @@ function collectValidationErrors(body, files) {
 
   Object.assign(
     errors,
-    validatePracticeSection({
-      experience: body.experience,
-      specialization: body.specialization,
-      serviceType: body.serviceType,
-      areas: body.areas,
-    }).errors
+    validatePracticeSection(
+      {
+        experience: body.experience,
+        specialization: body.specialization,
+        serviceType: body.serviceType,
+        areas: body.areas,
+      },
+      { specializationOptional: true },
+    ).errors
   );
 
   const certificate = files?.certificate?.[0];
