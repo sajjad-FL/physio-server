@@ -1,6 +1,6 @@
 # Nginx snippet for PhysiOkhom API (physio-server behind PM2)
 #
-# Physio registration uploads multipart FormData with up to ~15 files (2MB each).
+# Physio registration uploads multipart FormData with up to ~15 files (500 KB each).
 # Default nginx client_max_body_size is 1m — causes HTTP 413 before Node sees the request.
 #
 # Apply on production:
@@ -13,7 +13,7 @@ server {
     listen 443 ssl http2;
     server_name api.physiokhom.com;   # replace with your API host
 
-    # Required for physio registration + document uploads (~32MB max theoretical)
+    # Required for physio registration + document uploads (~8MB max theoretical)
     client_max_body_size 50m;
 
     ssl_certificate     /etc/letsencrypt/live/api.physiokhom.com/fullchain.pem;

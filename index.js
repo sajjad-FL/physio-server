@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { connectDB } from './config/db.js';
 import { warmPricingCache } from './utils/pricingConfig.js';
 import Booking from './models/Booking.js';
-import { uploadsRoot } from './config/upload.js';
+import { uploadsRoot, MAX_UPLOAD_BYTES } from './config/upload.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import physioRoutes from './routes/physioRoutes.js';
 import physioPortalRoutes from './routes/physioPortalRoutes.js';
@@ -94,7 +94,8 @@ app.use('/api/shop', shopRoutes);
 app.use((err, _req, res, _next) => {
   console.error(err);
   if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({ message: 'File too large. Maximum size is 2MB per file.' });
+    const maxKb = Math.round(MAX_UPLOAD_BYTES / 1024);
+    return res.status(400).json({ message: `File too large. Maximum size is ${maxKb} KB per file.` });
   }
   const status = err.statusCode || 500;
   const message = status === 500 ? 'Internal server error' : err.message || 'Error';

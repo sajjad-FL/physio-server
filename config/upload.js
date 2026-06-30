@@ -11,8 +11,8 @@ if (!fs.existsSync(uploadsRoot)) {
   fs.mkdirSync(uploadsRoot, { recursive: true });
 }
 
-/** Max size for any physio upload (images + PDFs), in bytes */
-export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+/** Max size per uploaded file (images + PDFs), in bytes */
+export const MAX_UPLOAD_BYTES = 500 * 1024;
 
 const diskStorage = multer.diskStorage({
   destination(_req, _file, cb) {
