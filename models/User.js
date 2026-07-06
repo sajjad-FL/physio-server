@@ -40,6 +40,7 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, required: true, trim: true, unique: true },
     address: { type: addressSchema, default: () => ({}) },
     location: { type: String, trim: true },
+    pincode: { type: String, trim: true, default: null },
     coordinates: { type: coordinatesSchema, default: null },
     isVerified: { type: Boolean, default: false },
     /** Set for self-registered physios (email/password). Omitted from queries unless .select('+passwordHash'). */
@@ -48,13 +49,13 @@ const userSchema = new mongoose.Schema(
     hasPasswordLogin: { type: Boolean, default: false },
     role: {
       type: String,
-      enum: ['user', 'physio', 'admin'],
+      enum: ['user', 'physio', 'admin', 'care_manager'],
       default: 'user',
     },
     /** @deprecated Legacy multi-role array — run scripts/migrateUserRoles.js and omit on new writes */
     roles: {
       type: [String],
-      enum: ['user', 'physio', 'admin'],
+      enum: ['user', 'physio', 'admin', 'care_manager'],
       required: false,
     },
     physioId: {

@@ -13,6 +13,7 @@ import {
 } from '../services/ledger.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
+import { isPlanLive } from '../utils/planStatus.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -92,8 +93,8 @@ export async function recordOfflineCollection(req, res, next) {
     if (booking.homePlanPaymentMode !== 'offline') {
       return res.status(400).json({ message: 'Booking is not an offline plan' });
     }
-    if (booking.planStatus && booking.planStatus !== 'approved') {
-      return res.status(400).json({ message: 'Patient must approve the plan before collection' });
+    if (booking.planStatus && !isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Patient must consent to the plan before collection' });
     }
 
     const sessionResolved = resolveSessionId(req.body?.sessionId, booking);
@@ -244,8 +245,8 @@ export async function createInstallmentOrder(req, res, next) {
     if (booking.userId.toString() !== userId) {
       return res.status(403).json({ message: 'Forbidden' });
     }
-    if (booking.serviceType === 'home' && booking.planStatus && booking.planStatus !== 'approved') {
-      return res.status(400).json({ message: 'Home visit plan must be approved before payment' });
+    if (booking.serviceType === 'home' && booking.planStatus && !isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Home visit plan must be live before payment' });
     }
     if (booking.serviceType === 'home' && booking.homePlanPaymentMode === 'offline') {
       return res.status(400).json({ message: 'This plan uses offline payment' });

@@ -28,8 +28,15 @@ export function bookingLinePerSession(booking) {
 
 function toBookingDoc(bookingOrId) {
   if (!bookingOrId) return null;
-  if (typeof bookingOrId === 'string') return Booking.findById(bookingOrId);
-  return bookingOrId;
+  if (typeof bookingOrId.save === 'function') return bookingOrId;
+  const id =
+    typeof bookingOrId === 'string'
+      ? bookingOrId
+      : bookingOrId?._id != null
+        ? bookingOrId._id
+        : bookingOrId;
+  if (!id) return null;
+  return Booking.findById(id);
 }
 
 /**
@@ -47,9 +54,11 @@ function toBookingDoc(bookingOrId) {
  * Safe to call repeatedly (idempotent).
  *
  * @param {string | import('mongoose').Document} bookingOrId
+ * @param {{ session?: import('mongoose').ClientSession }} [opts]
  * @returns {Promise<{ totalPaid: number, outstanding: number, coveredSessions: number, sessionsCount: number }>}
  */
-export async function recomputeBookingPaymentRollup(bookingOrId) {
+export async function recomputeBookingPaymentRollup(bookingOrId, opts = {}) {
+  const { session } = opts;
   const booking = await toBookingDoc(bookingOrId);
   if (!booking) return { totalPaid: 0, outstanding: 0, coveredSessions: 0, sessionsCount: 0 };
 
@@ -81,7 +90,7 @@ export async function recomputeBookingPaymentRollup(bookingOrId) {
     if (!booking.heldAt) booking.heldAt = new Date();
   }
 
-  await booking.save();
+  await booking.save(session ? { session } : undefined);
 
   const sessionsCount = Array.isArray(booking.schedule) && booking.schedule.length > 0
     ? booking.schedule.length

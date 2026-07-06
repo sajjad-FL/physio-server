@@ -9,6 +9,27 @@ import {
   getComputedWallet,
 } from '../utils/ledgerBalance.js';
 
+function shapeTransactionBookingRef(booking) {
+  if (!booking || typeof booking !== 'object') return null;
+  const patientName =
+    booking.userId && typeof booking.userId === 'object' ? booking.userId?.name : null;
+  return {
+    id: booking._id,
+    issue: booking.issue,
+    patientName,
+    date: booking.date,
+    timeSlot: booking.timeSlot,
+  };
+}
+
+function shapeFinanceTransaction(tx) {
+  const booking = tx.bookingId;
+  return {
+    ...tx,
+    bookingRef: shapeTransactionBookingRef(booking),
+  };
+}
+
 /**
  * Admin finance summary tiles: gross revenue, platform commission earned,
  * pending commission dues, and pending payout requests.
@@ -166,6 +187,11 @@ export async function getPhysioFinanceDetail(req, res, next) {
       Transaction.find({ physioId: oid, status: 'posted' })
         .sort({ createdAt: -1 })
         .limit(30)
+        .populate({
+          path: 'bookingId',
+          select: 'issue date timeSlot userId',
+          populate: { path: 'userId', select: 'name phone' },
+        })
         .lean(),
       Transaction.find({ physioId: oid, status: 'posted', type: 'settlement' })
         .sort({ createdAt: -1 })
@@ -180,7 +206,7 @@ export async function getPhysioFinanceDetail(req, res, next) {
 
     return res.json({
       wallet,
-      recentTransactions: recentTx,
+      recentTransactions: recentTx.map(shapeFinanceTransaction),
       settlementHistory,
       withdrawals,
       pendingWithdrawal: pending || null,

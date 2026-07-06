@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin } from '../middleware/adminMiddleware.js';
+import { uploadProductImages } from '../config/upload.js';
 import {
   listPhysioVerifications,
   patchPhysioVerification,
@@ -56,7 +57,26 @@ import {
   patchAdminShopOrderStatus,
   cancelAdminShopOrder,
 } from '../controllers/shopOrderController.js';
-import { uploadProductImages } from '../config/upload.js';
+import {
+  listZones,
+  getZone,
+  createZone,
+  updateZone,
+  addZonePincodes,
+  assignManagerToBooking,
+  reassignManager,
+  listCareManagers,
+  promoteToCareManager,
+  listUnmappedPincodes,
+} from '../controllers/zoneController.js';
+import {
+  getManagerLedgerAdmin,
+  createSettlementBatch,
+  settleBatch,
+  listSettlementBatches,
+  disputeBatch,
+  dedupeManagerLedger,
+} from '../controllers/settlementController.js';
 
 const router = Router();
 
@@ -104,5 +124,24 @@ router.get('/shop/orders', requireAdmin, listAdminShopOrders);
 router.get('/shop/orders/:id', requireAdmin, getAdminShopOrderById);
 router.patch('/shop/orders/:id/status', requireAdmin, patchAdminShopOrderStatus);
 router.patch('/shop/orders/:id/cancel', requireAdmin, cancelAdminShopOrder);
+
+router.get('/zones', requireAdmin, listZones);
+router.post('/zones', requireAdmin, createZone);
+router.get('/zones/unmapped-pincodes', requireAdmin, listUnmappedPincodes);
+router.get('/zones/:id', requireAdmin, getZone);
+router.patch('/zones/:id', requireAdmin, updateZone);
+router.post('/zones/:id/pincodes', requireAdmin, addZonePincodes);
+
+router.get('/care-managers', requireAdmin, listCareManagers);
+router.post('/care-managers/promote', requireAdmin, promoteToCareManager);
+router.patch('/bookings/:id/assign-manager', requireAdmin, assignManagerToBooking);
+router.patch('/bookings/:id/reassign-manager', requireAdmin, reassignManager);
+
+router.get('/managers/:managerId/ledger', requireAdmin, getManagerLedgerAdmin);
+router.post('/managers/:managerId/ledger/dedupe', requireAdmin, dedupeManagerLedger);
+router.post('/managers/:managerId/settlement-batches', requireAdmin, createSettlementBatch);
+router.get('/settlement-batches', requireAdmin, listSettlementBatches);
+router.patch('/settlement-batches/:batchId/settle', requireAdmin, settleBatch);
+router.patch('/settlement-batches/:batchId/dispute', requireAdmin, disputeBatch);
 
 export default router;

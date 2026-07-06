@@ -127,14 +127,34 @@ export async function respondToAssignment(req, res, next) {
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ message: 'Invalid booking id' });
     }
-    if (action !== 'accept' && action !== 'reject') {
-      return res.status(400).json({ message: 'action must be accept or reject' });
-    }
 
     const booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (booking.physioId?.toString() !== physioId) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    /** Care-manager flow: assignment is direct — treat accept as idempotent success. */
+    if (booking.managerId && action === 'accept') {
+      if (booking.status === 'assigned') {
+        booking.status = 'accepted';
+        booking.sessionStatus = 'scheduled';
+        await booking.save();
+      }
+      const out = await Booking.findById(id)
+        .populate('userId', 'name phone location coordinates')
+        .populate('physioId', 'name specialization location phone')
+        .lean();
+      return res.json(out);
+    }
+    if (booking.managerId && action === 'reject') {
+      return res.status(400).json({
+        message: 'This booking is managed by a care manager. Contact admin to reassign.',
+      });
+    }
+
+    if (action !== 'accept' && action !== 'reject') {
+      return res.status(400).json({ message: 'action must be accept or reject' });
     }
     if (booking.status !== 'assigned') {
       return res.status(400).json({ message: 'This booking is not awaiting your response' });
@@ -255,6 +275,14 @@ function ymdToday() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** Home-care / manager flows: collection is not the physio's gate for completing sessions. */
+function physioSessionPaymentGateSkipped(booking) {
+  if (booking.managerId) return true;
+  if (booking.planCreatedByRole === 'care_manager') return true;
+  if (booking.serviceType === 'home') return true;
+  return false;
+}
+
 /**
  * Re-compute the booking-level sessionStatus/status rollup from per-session
  * schedule entries. Booking is considered "completed" when every scheduled
@@ -316,10 +344,8 @@ async function loadBookingForSessionMutation(req, res) {
 /**
  * Milestone-based coverage gate for session state transitions.
  *
- * Before completing session #N the cumulative verified payment must meet the
- * milestone threshold defined in planMilestones.js.  The old per-session
- * "unlock" logic has been removed — sessions are no longer individually
- * locked; only milestone checkpoints are enforced.
+ * Skipped for home-care and care-manager flows — managers collect offline payments.
+ * Online marketplace bookings still enforce milestones before session completion.
  */
 async function enforcePaymentCoverage(booking, sessionId, res) {
   const payments = await Payment.find({ bookingId: booking._id }).lean();
@@ -334,6 +360,11 @@ async function enforcePaymentCoverage(booking, sessionId, res) {
       return { ok: false };
     }
     ordinal = idx + 1;
+  }
+
+  if (physioSessionPaymentGateSkipped(booking)) {
+    const summary = payments.length > 0 ? deriveBookingPaymentSummary(booking, payments) : null;
+    return { ok: true, summary, ordinal };
   }
 
   // Determine effective paid amount: verified + collected (physio-recorded offline cash)

@@ -10,11 +10,7 @@ import {
   computeMarketplaceSplit,
   creditPhysioWalletOnline,
 } from '../utils/marketplacePayment.js';
-import {
-  getRazorpayConfig,
-  assertValidRazorpayPaymentSignature,
-  assertPaymentCapturedForOrder,
-} from '../utils/razorpayClient.js';
+import { isPlanLive } from '../utils/planStatus.js';
 
 export async function createOrder(req, res, next) {
   try {
@@ -34,8 +30,8 @@ export async function createOrder(req, res, next) {
     if (booking.paymentStatus === 'held' || booking.paymentStatus === 'released') {
       return res.status(400).json({ message: 'Booking payment is already settled' });
     }
-    if (booking.serviceType === 'home' && booking.planStatus !== 'approved') {
-      return res.status(400).json({ message: 'Home visit plan must be approved before payment' });
+    if (booking.serviceType === 'home' && !isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Home visit plan must be live before payment' });
     }
     if (booking.serviceType === 'home' && booking.homePlanPaymentMode === 'offline') {
       return res.status(400).json({ message: 'This plan uses offline payment' });

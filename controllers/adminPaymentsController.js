@@ -13,6 +13,19 @@ function escapeRegex(s) {
 
 const PAYMENT_STATUSES = ['pending', 'paid', 'collected', 'verified', 'rejected', 'refunded'];
 
+function sessionOrdinalFromSchedule(sessionId, schedule) {
+  if (!sessionId || !Array.isArray(schedule)) return null;
+  const idx = schedule.findIndex((s) => String(s._id) === String(sessionId));
+  return idx >= 0 ? idx + 1 : null;
+}
+
+function shapeQueueRow(row) {
+  const schedule = row.bookingSchedule;
+  const sessionOrdinal = sessionOrdinalFromSchedule(row.sessionId, schedule);
+  const { bookingSchedule, ...rest } = row;
+  return { ...rest, sessionOrdinal };
+}
+
 /**
  * Per-installment admin queue: one row per Payment document. Supports filtering
  * by mode, status, date range, and searching across physio/patient names and
@@ -82,13 +95,17 @@ export async function listPaymentsQueue(req, res, next) {
           physioPhone: { $arrayElemAt: ['$_physio.phone', 0] },
           bookingTotal: { $arrayElemAt: ['$_booking.totalAmount', 0] },
           bookingServiceType: { $arrayElemAt: ['$_booking.serviceType', 0] },
+          bookingIssue: { $arrayElemAt: ['$_booking.issue', 0] },
+          bookingDate: { $arrayElemAt: ['$_booking.date', 0] },
+          bookingTimeSlot: { $arrayElemAt: ['$_booking.timeSlot', 0] },
+          bookingSchedule: { $arrayElemAt: ['$_booking.schedule', 0] },
         },
       },
     ];
 
     if (search) {
       const rx = new RegExp(escapeRegex(search), 'i');
-      const or = [{ patientName: rx }, { physioName: rx }];
+      const or = [{ patientName: rx }, { physioName: rx }, { bookingIssue: rx }];
       if (oidSearch) {
         or.push({ _id: oidSearch });
         or.push({ bookingId: oidSearch });
@@ -107,6 +124,7 @@ export async function listPaymentsQueue(req, res, next) {
         $project: {
           _id: 1,
           bookingId: 1,
+          sessionId: 1,
           amount: 1,
           mode: 1,
           status: 1,
@@ -122,6 +140,10 @@ export async function listPaymentsQueue(req, res, next) {
           physioPhone: 1,
           bookingTotal: 1,
           bookingServiceType: 1,
+          bookingIssue: 1,
+          bookingDate: 1,
+          bookingTimeSlot: 1,
+          bookingSchedule: 1,
         },
       },
     ];
@@ -141,7 +163,7 @@ export async function listPaymentsQueue(req, res, next) {
     }
 
     return res.json({
-      data,
+      data: data.map(shapeQueueRow),
       total,
       page,
       totalPages: Math.max(1, Math.ceil(total / limit)),

@@ -4,6 +4,7 @@ import {
   requestHomeBooking,
   createHomePlan,
   approveHomePlan,
+  consentToPlan,
   collectOfflinePayment,
   verifyOfflinePayment,
   rejectOfflinePayment,
@@ -40,7 +41,13 @@ router.get('/mine', requireAuth, listMyBookings);
 router.get('/my', requireAuth, listMyBookings);
 router.get('/', requireAdmin, listBookings);
 router.post('/:bookingId/sessions/:sessionId/confirm', requireAuth, confirmSession);
-router.get('/:id', requireAuth, getBookingById);
+router.get(
+  '/:id',
+  authenticateJwt,
+  requireCompleteProfile,
+  requireRoles('user', 'care_manager'),
+  getBookingById
+);
 router.patch(
   '/:id/reschedule',
   authenticateJwt,
@@ -70,6 +77,7 @@ router.patch(
 );
 router.patch('/:id/verify-payment', requireAdmin, verifyOfflinePayment);
 router.patch('/:id/reject-payment', requireAdmin, rejectOfflinePayment);
+router.post('/:id/consent-plan', requireAuth, consentToPlan);
 router.patch('/:id/approve', requireAuth, approveHomePlan);
 
 export default router;

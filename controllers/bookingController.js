@@ -29,6 +29,10 @@ import {
   getAllowedPlanSessionCountsSync,
   getHomePlanMaxDiscountPercentSync,
 } from '../utils/pricingConfig.js';
+import { isPlanLive, isAwaitingPatientConsent } from '../utils/planStatus.js';
+import { normalizePincode } from '../utils/pincode.js';
+import { applyZoneAndManager } from '../utils/zoneAssign.js';
+import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -394,7 +398,8 @@ export async function listMyBookings(req, res, next) {
     const { page, limit, skip } = readPagination(req.query);
     const [list, total] = await Promise.all([
       Booking.find({ userId })
-      .populate('userId', 'name phone location coordinates')
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('managerId', 'name phone')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -422,7 +427,8 @@ export async function getAdminBookingById(req, res, next) {
     }
 
     const booking = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('managerId', 'name phone')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
@@ -444,7 +450,8 @@ export async function getBookingById(req, res, next) {
     }
 
     const booking = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('managerId', 'name phone')
       .populate(
         'physioId',
         'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews'
@@ -452,7 +459,13 @@ export async function getBookingById(req, res, next) {
       .lean();
 
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (userId && booking.userId?._id?.toString() !== userId) {
+    const role = req.auth?.role;
+    const isOwner = userId && booking.userId?._id?.toString() === userId;
+    const managerRef = booking.managerId?._id || booking.managerId;
+    const isManager =
+      role === 'care_manager' && managerRef && managerRef.toString() === userId;
+    const isAdmin = role === 'admin';
+    if (userId && !isOwner && !isManager && !isAdmin) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -628,18 +641,27 @@ export async function updateBooking(req, res, next) {
     const prevPid = prev.physioId ? prev.physioId.toString() : '';
     const physioNewlyAssigned = nextPid && nextPid !== prevPid;
 
-    if (physioNewlyAssigned && booking.status === 'assigned' && nextPid) {
+    if (physioNewlyAssigned && nextPid) {
+      if (booking.status === 'assigned' || booking.status === 'pending') {
+        await Booking.findByIdAndUpdate(id, {
+          status: 'accepted',
+          sessionStatus: 'scheduled',
+          workflowStatus: booking.workflowStatus || 'physio_assigned',
+        });
+        booking.status = 'accepted';
+        booking.sessionStatus = 'scheduled';
+      }
       const physioDoc = await Physiotherapist.findById(nextPid).select('phone name').lean();
       const phone = physioDoc?.phone;
       if (phone) {
         const when = `${booking.date} ${booking.timeSlot}`;
         await sendSMS({
           to: phone,
-          message: `New booking assigned: ${when}. Open your dashboard to accept or reject.`,
+          message: `New booking assigned: ${when}. Open your dashboard to view details.`,
         });
         await sendWhatsApp({
           to: phone,
-          message: `You have a new patient booking (${when}). Please accept or reject in your physio dashboard.`,
+          message: `You have a new patient booking (${when}). View details in your physio dashboard.`,
         });
       }
       fireBookingPush(async () => {
@@ -647,7 +669,7 @@ export async function updateBooking(req, res, next) {
         if (!physioLoginId) return;
         await notifyExpoUsers([physioLoginId], {
           title: 'New booking assigned',
-          body: `Tap to open — ${booking.date} · ${booking.timeSlot}. Accept or reject in the app.`,
+          body: `Tap to open — ${booking.date} · ${booking.timeSlot}.`,
           data: {
             kind: 'booking_assigned',
             bookingId: String(booking._id),
@@ -719,8 +741,10 @@ export async function requestHomeBooking(req, res, next) {
     }
 
     const coords = parseCoords(req.body);
+    const pincode = normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
     const userUpdate = { name: name.trim(), location: location.trim() };
     if (coords) userUpdate.coordinates = coords;
+    if (pincode) userUpdate.pincode = pincode;
     const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
     if (!user || !user.isVerified) {
       return res.status(401).json({ message: 'Unauthorized' });
@@ -728,7 +752,7 @@ export async function requestHomeBooking(req, res, next) {
 
     let booking;
     try {
-      booking = await Booking.create({
+      booking = new Booking({
         userId,
         physioId: null,
         issue: issue.trim(),
@@ -738,8 +762,12 @@ export async function requestHomeBooking(req, res, next) {
         paymentStatus: 'pending',
         serviceType: 'home',
         planStatus: 'requested',
+        workflowStatus: 'pending_manager_assignment',
+        pincode: pincode || null,
         consentAccepted: true,
       });
+      await applyZoneAndManager(booking, { pincode, location: location.trim() });
+      await booking.save();
     } catch (e) {
       if (e?.code === 11000) {
         return res.status(409).json({
@@ -751,7 +779,9 @@ export async function requestHomeBooking(req, res, next) {
     }
 
     const out = await Booking.findById(booking._id)
-      .populate('userId', 'name phone location coordinates')
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('managerId', 'name phone')
+      .populate('zoneId', 'name')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
     return res.status(201).json(out);
@@ -782,89 +812,41 @@ export async function createHomePlan(req, res, next) {
       return res.status(400).json({ message: 'Plan can be created only for home service' });
     }
 
-    const sessions = Number(req.body?.sessions);
-    const amountPerSession = Number(req.body?.amountPerSession);
-    const discountPercent = Number(req.body?.discountPercent ?? 0);
-    const paymentMode = req.body?.paymentMode === 'offline' ? 'offline' : 'online';
-    const schedule = parseSchedule(req.body?.schedule);
-
-    if (!Number.isInteger(sessions) || sessions < 1) {
-      return res.status(400).json({ message: 'sessions must be an integer greater than 0' });
-    }
-    const allowedSessions = getAllowedPlanSessionCountsSync();
-    if (!allowedSessions.includes(sessions)) {
-      return res.status(400).json({
-        message: `sessions must be one of ${allowedSessions.join(', ')}`,
-      });
-    }
-    if (!schedule || schedule.length !== sessions) {
-      return res.status(400).json({ message: 'schedule must match the number of sessions' });
-    }
-    if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
-      return res.status(400).json({ message: 'amountPerSession must be greater than 0' });
-    }
-
     const physioRate = await Physiotherapist.findById(booking.physioId).select('pricePerSession').lean();
-    const rateLo = Number(physioRate?.pricePerSession);
-    if (Number.isFinite(rateLo) && rateLo > 0 && amountPerSession !== rateLo) {
-      return res.status(400).json({
-        message: `Per-session amount must be ₹${rateLo} (your fixed session rate)`,
+    const validated = validateHomePlanInput(req.body, {
+      requirePhysioRate:
+        Number.isFinite(Number(physioRate?.pricePerSession)) && Number(physioRate?.pricePerSession) > 0
+          ? Number(physioRate.pricePerSession)
+          : null,
+    });
+    if (validated.error) {
+      return res.status(400).json({ message: validated.error });
+    }
+
+    try {
+      applyHomePlanFields(booking, {
+        ...validated,
+        createdBy: req.user?.id,
+        createdByRole: 'physio',
+        planStatus: 'awaiting_consent',
+        workflowStatus: 'awaiting_patient_consent',
       });
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
     }
 
-    const maxDiscount = getHomePlanMaxDiscountPercentSync();
-    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > maxDiscount) {
-      return res.status(400).json({
-        message: `discountPercent must be between 0 and ${maxDiscount}`,
-      });
-    }
-
-    /** Same distance surcharge as at assignment, applied per home visit (each session). */
-    const perVisitDistance = roundMoney2(Math.max(0, Number(booking.distanceSurchargeAmount) || 0));
-    const linePerSession = roundMoney2(amountPerSession + perVisitDistance);
-    const sessionSubtotal = sessions * linePerSession;
-
-    // Patient pays the discounted total; physio earns from the undiscounted subtotal
-    // so that the platform absorbs the plan discount rather than the physio.
-    const totalAmount = roundMoney2(sessionSubtotal * (1 - discountPercent / 100));
-    if (totalAmount <= 0) {
-      return res.status(400).json({ message: 'total amount after discount must be greater than 0' });
-    }
-
-    const grossSplit    = computeMarketplaceSplit(sessionSubtotal); // split on full (undiscounted) rate
-    const physioEarning = grossSplit.physioEarning;                 // physio always gets 80% of base
-    const platformEarning = roundMoney2(totalAmount - physioEarning); // platform absorbs discount
-
-    booking.sessions = sessions;
-    booking.schedule = schedule;
-    booking.amountPerSession = amountPerSession;
-    booking.discountPercent = discountPercent;
-    booking.totalAmount = totalAmount;
-    booking.amountPaise = Math.round(totalAmount * 100);
-    booking.homePlanPaymentMode = paymentMode;
-    booking.offlinePaymentVerified = false;
-    booking.planStatus = 'proposed';
     if (booking.status === 'assigned') {
-      // Submitting a plan is an implicit acceptance of the assignment
-      booking.status = 'accepted';
+      booking.status = 'assigned';
       booking.sessionStatus = 'scheduled';
     }
-    // If already accepted/scheduled/completed, status stays as-is
-    booking.payment = {
-      mode: paymentMode,
-      status: 'pending',
-      amount: totalAmount,
-      commission: platformEarning,
-      physioEarning: physioEarning,
-    };
     await booking.save();
 
     fireBookingPush(async () => {
       await notifyExpoUsers([booking.userId], {
-        title: 'Home care plan ready',
-        body: 'Your physiotherapist proposed a plan. Open the app to review and approve.',
+        title: 'Your care plan is ready',
+        body: 'Review and consent to your home care plan in the app.',
         data: {
-          kind: 'plan_proposed',
+          kind: 'plan_awaiting_consent',
           bookingId: String(booking._id),
         },
       });
@@ -905,8 +887,8 @@ export async function collectOfflinePayment(req, res, next) {
     if (booking.homePlanPaymentMode !== 'offline') {
       return res.status(400).json({ message: 'This booking is not offline payment mode' });
     }
-    if (booking.planStatus !== 'approved') {
-      return res.status(400).json({ message: 'Patient must approve the plan before collection' });
+    if (!isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Patient must consent to the plan before collection' });
     }
 
     const ps = booking.payment?.status;
@@ -963,8 +945,8 @@ export async function verifyOfflinePayment(req, res, next) {
     if (booking.homePlanPaymentMode !== 'offline') {
       return res.status(400).json({ message: 'This booking is not offline payment mode' });
     }
-    if (booking.planStatus !== 'approved') {
-      return res.status(400).json({ message: 'Patient must approve the plan before payment can be verified' });
+    if (!isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Patient must consent to the plan before payment can be verified' });
     }
     if (booking.payment?.status !== 'collected') {
       return res
@@ -1056,7 +1038,67 @@ export async function rejectOfflinePayment(req, res, next) {
   }
 }
 
+export async function consentToPlan(req, res, next) {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid booking id' });
+    }
+
+    const booking = await Booking.findById(id);
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (booking.userId?.toString() !== userId) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    if (booking.serviceType !== 'home') {
+      return res.status(400).json({ message: 'Only home bookings need plan consent' });
+    }
+    if (!isAwaitingPatientConsent(booking.planStatus)) {
+      return res.status(400).json({ message: 'Plan is not awaiting consent' });
+    }
+
+    const now = new Date();
+    booking.planStatus = 'live';
+    booking.patientConsentedAt = now;
+    booking.planLiveAt = now;
+    booking.workflowStatus = 'plan_live';
+    await booking.save();
+
+    fireBookingPush(async () => {
+      if (booking.managerId) {
+        await notifyExpoUsers([booking.managerId], {
+          title: 'Patient consented to plan',
+          body: 'You can assign a physiotherapist and record payment.',
+          data: { kind: 'plan_live', bookingId: String(booking._id) },
+        });
+      }
+      if (booking.physioId) {
+        const physioLoginId = await findUserIdForPhysioProfile(booking.physioId);
+        if (physioLoginId) {
+          await notifyExpoUsers([physioLoginId], {
+            title: 'Plan is live',
+            body: 'The patient consented to the home care plan.',
+            data: { kind: 'plan_live', bookingId: String(booking._id) },
+          });
+        }
+      }
+    });
+
+    const out = await Booking.findById(id)
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('managerId', 'name phone')
+      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .lean();
+    return res.json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function approveHomePlan(req, res, next) {
+  /** @deprecated Use consentToPlan — kept for backward compatibility. */
   try {
     const { id } = req.params;
     const userId = req.user?.id;
@@ -1073,28 +1115,22 @@ export async function approveHomePlan(req, res, next) {
     if (booking.serviceType !== 'home') {
       return res.status(400).json({ message: 'Only home bookings need plan approval' });
     }
-    if (booking.planStatus !== 'proposed') {
-      return res.status(400).json({ message: 'Plan is not ready for approval' });
+    if (booking.planStatus === 'live' || booking.planStatus === 'approved') {
+      const out = await Booking.findById(id)
+        .populate('userId', 'name phone location coordinates')
+        .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+        .lean();
+      return res.json(out);
+    }
+    if (!isAwaitingPatientConsent(booking.planStatus)) {
+      return res.status(400).json({ message: 'Plan is not ready for consent' });
     }
 
-    booking.planStatus = 'approved';
-    // Keep booking.status as 'accepted' — plan approval does not reset the assignment
+    booking.planStatus = 'live';
+    booking.patientConsentedAt = new Date();
+    booking.planLiveAt = booking.patientConsentedAt;
+    booking.workflowStatus = 'plan_live';
     await booking.save();
-
-    fireBookingPush(async () => {
-      const physioLoginId = booking.physioId
-        ? await findUserIdForPhysioProfile(booking.physioId)
-        : null;
-      if (!physioLoginId) return;
-      await notifyExpoUsers([physioLoginId], {
-        title: 'Plan approved',
-        body: 'The patient approved your home care plan. You can proceed with the next steps in the app.',
-        data: {
-          kind: 'plan_approved',
-          bookingId: String(booking._id),
-        },
-      });
-    });
 
     const out = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates')
@@ -1111,7 +1147,9 @@ export async function rescheduleBooking(req, res, next) {
     const { id } = req.params;
     const isAdmin = Boolean(req.admin);
     const physioId = req.physio?.id;
-    if (!isAdmin && !physioId) {
+    const managerUserId = req.user?.id;
+    const isManager = req.auth?.role === 'care_manager';
+    if (!isAdmin && !physioId && !isManager) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
     if (!mongoose.isValidObjectId(id)) {
@@ -1142,7 +1180,11 @@ export async function rescheduleBooking(req, res, next) {
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
     if (!isAdmin) {
-      if (booking.physioId?.toString() !== physioId) {
+      if (isManager) {
+        if (booking.managerId?.toString() !== String(managerUserId)) {
+          return res.status(403).json({ message: 'Forbidden' });
+        }
+      } else if (booking.physioId?.toString() !== physioId) {
         return res.status(403).json({ message: 'Forbidden' });
       }
     }
@@ -1224,7 +1266,7 @@ export async function rescheduleBooking(req, res, next) {
         bookingId: String(booking._id),
       };
 
-      if (isAdmin) {
+      if (isAdmin || isManager) {
         const ids = [patientId, physioLoginId?.toString()].filter(Boolean);
         if (ids.length > 0) {
           await notifyExpoUsers(ids, {
@@ -1257,6 +1299,18 @@ async function fetchBookingPopulated(bookingId) {
     .populate('userId', 'name phone location coordinates')
     .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
     .lean();
+}
+
+function canManageBookingSessions(req, booking, res) {
+  if (req.admin) return true;
+  if (
+    req.auth?.role === 'care_manager' &&
+    booking.managerId?.toString() === String(req.user?.id)
+  ) {
+    return true;
+  }
+  res.status(403).json({ message: 'Forbidden' });
+  return false;
 }
 
 function ensureAdmin(req, res) {
@@ -1337,7 +1391,6 @@ export async function addAdminBookingSession(req, res, next) {
 export async function deleteAdminBookingSession(req, res, next) {
   try {
     const { id, sessionId } = req.params;
-    if (!ensureAdmin(req, res)) return;
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ message: 'Invalid booking id' });
     }
@@ -1347,6 +1400,7 @@ export async function deleteAdminBookingSession(req, res, next) {
 
     const booking = await Booking.findById(id);
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!canManageBookingSessions(req, booking, res)) return;
     if (booking.sessionStatus === 'completed' || booking.status === 'completed') {
       return res.status(400).json({ message: 'Cannot modify sessions for a completed booking' });
     }

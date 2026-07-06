@@ -254,7 +254,7 @@ export async function listAdminUsers(req, res, next) {
       filter.$or = [{ physioId: null }, { physioId: { $exists: false } }];
     }
     const role = String(req.query.role || '').trim();
-    if (['user', 'physio', 'admin'].includes(role)) {
+    if (['user', 'physio', 'admin', 'care_manager'].includes(role)) {
       filter.role = role;
     }
     const linkedPhysio = String(req.query.linkedPhysio || '').toLowerCase();
