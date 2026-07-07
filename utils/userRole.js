@@ -7,10 +7,10 @@ const VALID = new Set(['user', 'physio', 'admin', 'care_manager']);
  */
 export function normalizeRole(user) {
   if (!user) return 'user';
-  if (VALID.has(user.role)) return user.role;
   const arr = Array.isArray(user.roles) ? user.roles : [];
-  if (arr.includes('admin')) return 'admin';
-  if (arr.includes('care_manager')) return 'care_manager';
-  if (arr.includes('physio')) return 'physio';
+  if (user.role === 'admin' || arr.includes('admin')) return 'admin';
+  if (user.role === 'care_manager' || arr.includes('care_manager')) return 'care_manager';
+  if (user.role === 'physio' || arr.includes('physio')) return 'physio';
+  if (VALID.has(user.role)) return user.role;
   return 'user';
 }
