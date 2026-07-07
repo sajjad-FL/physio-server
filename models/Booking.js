@@ -155,6 +155,12 @@ const bookingSchema = new mongoose.Schema(
     /** Total distance surcharge amount in INR added to booking total. */
     distanceSurchargeAmount: { type: Number, min: 0, default: 0 },
     discountPercent: { type: Number, min: 0, max: 15, default: null },
+    /** Full upfront vs milestone-based payments for home plans. */
+    homePlanBillingType: {
+      type: String,
+      enum: ['full', 'installment'],
+      default: null,
+    },
     homePlanPaymentMode: {
       type: String,
       enum: ['online', 'offline'],

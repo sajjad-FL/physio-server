@@ -2,21 +2,29 @@ import {
   getAllowedPlanSessionCountsSync,
   getHomePlanMaxDiscountPercentSync,
   getPlatformCommissionPerSessionSync,
+  resolveHomePlanDiscount,
 } from './pricingConfig.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
 
+function normalizeBillingType(raw) {
+  return raw === 'full' ? 'full' : 'installment';
+}
+
 /**
  * Apply home plan pricing to a booking document (not saved).
  * @param {import('mongoose').Document} booking
- * @param {{ sessions: number, amountPerSession: number, discountPercent?: number, paymentMode?: string, schedule: { date: string, time: string }[], createdBy?: import('mongoose').Types.ObjectId, createdByRole?: string, planStatus?: string, workflowStatus?: string }} input
+ * @param {{ sessions: number, amountPerSession: number, discountPercent?: number, billingType?: string, paymentMode?: string, schedule: { date: string, time: string }[], createdBy?: import('mongoose').Types.ObjectId, createdByRole?: string, planStatus?: string, workflowStatus?: string }} input
  */
 export function applyHomePlanFields(booking, input) {
   const sessions = Number(input.sessions);
   const amountPerSession = Number(input.amountPerSession);
-  const discountPercent = Number(input.discountPercent ?? 0);
+  const billingType = normalizeBillingType(input.billingType);
+  const discountPercent = Number(
+    input.discountPercent ?? resolveHomePlanDiscount({ sessions, billingType }),
+  );
   const paymentMode = input.paymentMode === 'offline' ? 'offline' : 'online';
   const schedule = input.schedule;
 
@@ -38,6 +46,7 @@ export function applyHomePlanFields(booking, input) {
   booking.schedule = schedule;
   booking.amountPerSession = amountPerSession;
   booking.discountPercent = discountPercent;
+  booking.homePlanBillingType = billingType;
   booking.totalAmount = totalAmount;
   booking.amountPaise = Math.round(totalAmount * 100);
   booking.homePlanPaymentMode = paymentMode;
@@ -60,7 +69,7 @@ export function applyHomePlanFields(booking, input) {
 export function validateHomePlanInput(body, { requirePhysioRate = null } = {}) {
   const sessions = Number(body?.sessions);
   const amountPerSession = Number(body?.amountPerSession);
-  const discountPercent = Number(body?.discountPercent ?? 0);
+  const billingType = normalizeBillingType(body?.billingType);
   const paymentMode = body?.paymentMode === 'offline' ? 'offline' : 'online';
 
   if (!Number.isInteger(sessions) || sessions < 1) {
@@ -88,9 +97,10 @@ export function validateHomePlanInput(body, { requirePhysioRate = null } = {}) {
       return { error: `Per-session amount must be ₹${requirePhysioRate} (fixed session rate)` };
     }
   }
+  const discountPercent = resolveHomePlanDiscount({ sessions, billingType });
   const maxDiscount = getHomePlanMaxDiscountPercentSync();
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > maxDiscount) {
     return { error: `discountPercent must be between 0 and ${maxDiscount}` };
   }
-  return { sessions, amountPerSession, discountPercent, paymentMode, schedule };
+  return { sessions, amountPerSession, discountPercent, billingType, paymentMode, schedule };
 }

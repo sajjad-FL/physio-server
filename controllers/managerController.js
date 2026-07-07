@@ -372,7 +372,7 @@ export async function managerAssignPhysio(req, res, next) {
       const validated = validateHomePlanInput({
         sessions: booking.sessions,
         amountPerSession: booking.amountPerSession,
-        discountPercent: booking.discountPercent ?? 0,
+        billingType: booking.homePlanBillingType || 'installment',
         paymentMode: booking.homePlanPaymentMode || 'offline',
         schedule: booking.schedule,
       });

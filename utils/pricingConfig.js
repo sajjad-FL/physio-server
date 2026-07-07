@@ -264,6 +264,21 @@ export function getPlanMilestonesSync(sessionsCount) {
   return map[sessionsCount] ?? null;
 }
 
+export function getPlanTierForSessionsSync(sessionsCount) {
+  const sessions = Math.round(Number(sessionsCount));
+  const tiers = snapshotOrFallback().planTiers || [];
+  return tiers.find((t) => Number(t.sessions) === sessions) ?? null;
+}
+
+export function resolveHomePlanDiscount({ sessions, billingType }) {
+  if (billingType !== 'full') return 0;
+  const tier = getPlanTierForSessionsSync(sessions);
+  const maxDiscount = getHomePlanMaxDiscountPercentSync();
+  const raw = Number(tier?.defaultDiscountPercent ?? 0);
+  if (!Number.isFinite(raw) || raw < 0) return 0;
+  return Math.min(maxDiscount, Math.round(raw * 100) / 100);
+}
+
 export function getRequiredPctForSessionSync(sessionsCount, sessionOrdinal) {
   const milestones = getPlanMilestonesSync(sessionsCount);
   if (!milestones) {
