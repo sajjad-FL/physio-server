@@ -47,7 +47,7 @@ export async function getAdminNavCounts(_req, res, next) {
 
     // Finance badge surfaces any physio with commission due OR a pending payout.
     const duePhysios = walletRows.filter((r) => Number(r.wallet?.commissionDue || 0) > 0.009).length;
-    const finance = duePhysios + pendingWithdrawals;
+    const finance = duePhysios + pendingWithdrawals + payments;
 
     return res.json({
       bookings,

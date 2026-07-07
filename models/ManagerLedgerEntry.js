@@ -35,6 +35,22 @@ const managerLedgerEntrySchema = new mongoose.Schema(
       ref: 'ManagerSettlementBatch',
       default: null,
     },
+    /** Manager commission earned by this collection (INR), computed at record time. Null on pre-feature entries. */
+    managerCommissionAmount: { type: Number, min: 0, default: null },
+    /** Distribution audit written when the settlement batch is settled. */
+    distribution: {
+      type: new mongoose.Schema(
+        {
+          physioShare: { type: Number, min: 0, default: 0 },
+          managerShare: { type: Number, min: 0, default: 0 },
+          platformShare: { type: Number, default: 0 },
+          distributedAt: { type: Date, default: null },
+          skippedReason: { type: String, trim: true, default: '' },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
   },
   { timestamps: true }
 );

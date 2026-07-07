@@ -122,7 +122,8 @@ export async function verifyPayment(req, res, next) {
     }
 
     const rupees = bookingAmountRupees(booking);
-    const split = computeMarketplaceSplit(rupees > 0 ? rupees : amountPaise / 100);
+    const sessions = Math.max(1, Number(booking.sessions) || 1);
+    const split = computeMarketplaceSplit(rupees > 0 ? rupees : amountPaise / 100, sessions);
 
     const updateFields = {
       $set: {

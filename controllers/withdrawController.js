@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import WithdrawRequest from '../models/WithdrawRequest.js';
 import Transaction from '../models/Transaction.js';
-import { getComputedWallet } from '../utils/ledgerBalance.js';
+import { getComputedWallet, computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
 import { roundMoney2 } from '../utils/marketplacePayment.js';
 
 function parseAmount(body) {
@@ -65,10 +65,64 @@ function formatInr(n) {
   return `₹${roundMoney2(Number(n) || 0)}`;
 }
 
-export async function listWithdrawRequests(_req, res, next) {
+/** Care-manager mirror of getPendingWithdraw (manager auth chain sets req.user). */
+export async function getManagerPendingWithdraw(req, res, next) {
   try {
-    const list = await WithdrawRequest.find()
+    const managerId = req.user?.id;
+    const pending = await WithdrawRequest.findOne({ managerId, status: 'pending' }).lean();
+    return res.json({ pending });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Care-manager mirror of createWithdrawRequest — draws on settled commission. */
+export async function createManagerWithdrawRequest(req, res, next) {
+  try {
+    const managerId = req.user?.id;
+    const amount = parseAmount(req.body);
+    if (amount == null) {
+      return res.status(400).json({ message: 'Valid amount (INR) is required' });
+    }
+    if (amount < 1) {
+      return res.status(400).json({ message: 'Minimum withdrawal is ₹1' });
+    }
+
+    const existing = await WithdrawRequest.findOne({ managerId, status: 'pending' }).lean();
+    if (existing) {
+      return res.status(400).json({ message: 'You already have a pending withdrawal request' });
+    }
+
+    const balance = await computeManagerCommissionBalance(managerId);
+    if (amount > balance.availableBalance + 1e-6) {
+      return res.status(400).json({
+        message: `Amount exceeds withdrawable commission (${formatInr(balance.availableBalance)}). Commission becomes withdrawable after admin settles your cash hand-off.`,
+      });
+    }
+
+    const doc = await WithdrawRequest.create({
+      managerId,
+      amount,
+      status: 'pending',
+      requestedAt: new Date(),
+    });
+
+    return res.status(201).json(doc.toObject());
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listWithdrawRequests(req, res, next) {
+  try {
+    const payee = String(req.query?.payee || '').trim();
+    const filter = {};
+    if (payee === 'manager') filter.managerId = { $ne: null };
+    else if (payee === 'physio') filter.physioId = { $ne: null };
+
+    const list = await WithdrawRequest.find(filter)
       .populate('physioId', 'name phone specialization')
+      .populate('managerId', 'name phone')
       .sort({ requestedAt: -1 })
       .lean()
       .limit(200);
@@ -91,6 +145,7 @@ export async function updateWithdrawStatus(req, res, next) {
       return res.status(400).json({ message: 'status must be approved or rejected' });
     }
     const note = String(req.body?.note || req.body?.reason || '').trim().slice(0, 500);
+    const payoutReference = String(req.body?.payoutReference || '').trim().slice(0, 120);
 
     const reqDoc = await WithdrawRequest.findById(id).lean();
     if (!reqDoc) {
@@ -100,27 +155,39 @@ export async function updateWithdrawStatus(req, res, next) {
       return res.status(400).json({ message: 'Request already processed' });
     }
 
+    const isManager = Boolean(reqDoc.managerId);
+
     if (status === 'rejected') {
       const updated = await WithdrawRequest.findByIdAndUpdate(
         id,
-        { $set: { status: 'rejected', processedAt: new Date() } },
+        { $set: { status: 'rejected', processedAt: new Date(), rejectReason: note } },
         { new: true }
       )
         .populate('physioId', 'name phone')
+        .populate('managerId', 'name phone')
         .lean();
       return res.json(updated);
     }
 
-    const wallet = await getComputedWallet(reqDoc.physioId);
-    if (reqDoc.amount > wallet.availableBalance + 1e-6) {
-      return res.status(400).json({
-        message: `Insufficient net withdrawable balance to approve (${formatInr(wallet.availableBalance)} available after commission due)`,
-      });
+    if (isManager) {
+      const balance = await computeManagerCommissionBalance(reqDoc.managerId);
+      if (reqDoc.amount > balance.availableBalance + 1e-6) {
+        return res.status(400).json({
+          message: `Insufficient settled commission to approve (${formatInr(balance.availableBalance)} available)`,
+        });
+      }
+    } else {
+      const wallet = await getComputedWallet(reqDoc.physioId);
+      if (reqDoc.amount > wallet.availableBalance + 1e-6) {
+        return res.status(400).json({
+          message: `Insufficient net withdrawable balance to approve (${formatInr(wallet.availableBalance)} available after commission due)`,
+        });
+      }
     }
 
     const claimed = await WithdrawRequest.findOneAndUpdate(
       { _id: id, status: 'pending' },
-      { $set: { status: 'approved', processedAt: new Date() } },
+      { $set: { status: 'approved', processedAt: new Date(), payoutReference } },
       { new: true }
     ).lean();
 
@@ -129,28 +196,51 @@ export async function updateWithdrawStatus(req, res, next) {
     }
 
     try {
-      await Transaction.create({
-        physioId: reqDoc.physioId,
-        bookingId: null,
-        type: 'withdrawal',
-        direction: 'debit',
-        totalAmount: reqDoc.amount,
-        commission: 0,
-        physioEarning: 0,
-        status: 'posted',
-        meta: {
-          withdrawRequestId: String(reqDoc._id),
-          note: note || 'Withdrawal payout',
-        },
-      });
+      await Transaction.create(
+        isManager
+          ? {
+              userId: reqDoc.managerId,
+              physioId: null,
+              bookingId: null,
+              type: 'manager_withdrawal',
+              direction: 'debit',
+              totalAmount: reqDoc.amount,
+              commission: 0,
+              physioEarning: 0,
+              status: 'posted',
+              meta: {
+                withdrawRequestId: String(reqDoc._id),
+                note: note || 'Manager commission payout',
+                payoutReference,
+              },
+            }
+          : {
+              physioId: reqDoc.physioId,
+              bookingId: null,
+              type: 'withdrawal',
+              direction: 'debit',
+              totalAmount: reqDoc.amount,
+              commission: 0,
+              physioEarning: 0,
+              status: 'posted',
+              meta: {
+                withdrawRequestId: String(reqDoc._id),
+                note: note || 'Withdrawal payout',
+                payoutReference,
+              },
+            }
+      );
     } catch (txErr) {
       await WithdrawRequest.findByIdAndUpdate(id, {
-        $set: { status: 'pending', processedAt: null },
+        $set: { status: 'pending', processedAt: null, payoutReference: '' },
       });
       throw txErr;
     }
 
-    const out = await WithdrawRequest.findById(id).populate('physioId', 'name phone').lean();
+    const out = await WithdrawRequest.findById(id)
+      .populate('physioId', 'name phone')
+      .populate('managerId', 'name phone')
+      .lean();
     return res.json(out);
   } catch (err) {
     next(err);

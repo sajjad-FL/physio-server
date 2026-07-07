@@ -1,11 +1,16 @@
 /** Built-in defaults when PlatformSettings pricing fields are unset (env may override some). */
 
 export const DEFAULT_BOOKING_AMOUNT_RUPEES = 500;
+/** @deprecated Legacy percent default; new installs use DEFAULT_PLATFORM_COMMISSION_PER_SESSION. */
 export const DEFAULT_PLATFORM_COMMISSION_PERCENT = 20;
+/** Flat platform commission per session (INR). */
+export const DEFAULT_PLATFORM_COMMISSION_PER_SESSION = 100;
 export const DEFAULT_DISTANCE_SURCHARGE_BASE_KM = 5;
 export const DEFAULT_DISTANCE_SURCHARGE_PER_KM = 5;
 export const DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT = 15;
 export const DEFAULT_PHYSIO_PRICE_PER_SESSION = 500;
+/** Flat care-manager commission per session (INR). 0 = manager commission disabled. */
+export const DEFAULT_MANAGER_COMMISSION_PER_SESSION = 0;
 
 export const ALLOWED_PLAN_SESSION_COUNTS = [7, 15, 30];
 

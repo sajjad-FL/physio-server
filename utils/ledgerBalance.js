@@ -107,6 +107,35 @@ export async function computeCommissionDue(physioId) {
   return roundMoney2(Math.max(0, offlineCommission - settlements));
 }
 
+/**
+ * Care-manager commission wallet, derived from manager Transaction rows:
+ * settled commission credits (posted at settlement) minus withdrawal debits.
+ */
+export async function computeManagerCommissionBalance(managerUserId) {
+  const oid = new mongoose.Types.ObjectId(String(managerUserId));
+  const rows = await Transaction.aggregate([
+    {
+      $match: {
+        userId: oid,
+        status: POSTED,
+        type: { $in: ['manager_commission', 'manager_withdrawal'] },
+      },
+    },
+    { $group: { _id: '$type', sum: { $sum: '$totalAmount' } } },
+  ]);
+  let settledCommission = 0;
+  let withdrawn = 0;
+  for (const r of rows) {
+    if (r._id === 'manager_commission') settledCommission = r.sum;
+    if (r._id === 'manager_withdrawal') withdrawn = r.sum;
+  }
+  return {
+    settledCommission: roundMoney2(settledCommission),
+    withdrawn: roundMoney2(withdrawn),
+    availableBalance: roundMoney2(Math.max(0, settledCommission - withdrawn)),
+  };
+}
+
 /** Lifetime physio earnings recorded on credit legs (for dashboards). */
 export async function computeTotalEarnedCredits(physioId) {
   const oid = new mongoose.Types.ObjectId(physioId);

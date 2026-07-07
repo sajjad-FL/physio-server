@@ -1,7 +1,7 @@
-import { computeMarketplaceSplit } from './marketplacePayment.js';
 import {
   getAllowedPlanSessionCountsSync,
   getHomePlanMaxDiscountPercentSync,
+  getPlatformCommissionPerSessionSync,
 } from './pricingConfig.js';
 
 function roundMoney2(n) {
@@ -30,9 +30,9 @@ export function applyHomePlanFields(booking, input) {
     });
   }
 
-  const grossSplit = computeMarketplaceSplit(sessionSubtotal);
-  const physioEarning = grossSplit.physioEarning;
-  const platformEarning = roundMoney2(totalAmount - physioEarning);
+  const perSessionCommission = getPlatformCommissionPerSessionSync();
+  const platformEarning = roundMoney2(Math.min(totalAmount, perSessionCommission * sessions));
+  const physioEarning = roundMoney2(totalAmount - platformEarning);
 
   booking.sessions = sessions;
   booking.schedule = schedule;

@@ -34,11 +34,16 @@ const platformSettingsSchema = new mongoose.Schema(
     referralSignupBonusAmountUpdatedAt: { type: Date, default: null },
 
     defaultBookingAmountRupees: { type: Number, min: 0, default: null },
+    /** @deprecated Use platformCommissionPerSessionRupees */
     platformCommissionPercent: { type: Number, min: 0, max: 100, default: null },
+    /** Flat platform commission per session (INR). Null → default / legacy percent conversion. */
+    platformCommissionPerSessionRupees: { type: Number, min: 0, default: null },
     distanceSurchargeBaseKm: { type: Number, min: 0, default: null },
     distanceSurchargePerKmRupees: { type: Number, min: 0, default: null },
     homePlanMaxDiscountPercent: { type: Number, min: 0, max: 50, default: null },
     defaultPhysioPricePerSession: { type: Number, min: 0, default: null },
+    /** Flat care-manager commission per session (INR). Null → default (0 = disabled). */
+    managerCommissionPerSessionRupees: { type: Number, min: 0, default: null },
     pricingUpdatedAt: { type: Date, default: null },
 
     planTiers: { type: [planTierSchema], default: undefined },

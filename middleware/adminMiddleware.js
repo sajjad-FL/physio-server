@@ -3,29 +3,26 @@ import { hydrateAuthFromDecoded, JWT_SECRET } from '../utils/authResolve.js';
 import { requireCompleteProfile } from './requireCompleteProfile.js';
 
 /**
- * Allows admin via `ADMIN_API_KEY` (Bearer or x-admin-key) or JWT with `admin` role.
+ * Requires a JWT whose role resolves to `admin`. The role is read from the user's
+ * DB document (see hydrateAuthFromDecoded), not the token claim, so it cannot be
+ * forged. There is no static admin API key.
  */
 export async function requireAdmin(req, res, next) {
   try {
-    const key = process.env.ADMIN_API_KEY;
-    if (!key) {
-      return res.status(503).json({ message: 'Admin API is not configured' });
-    }
-
     const authHeader = req.headers.authorization;
     const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const headerKey = req.headers['x-admin-key'];
-
-    if (bearer === key || headerKey === key) {
-      req.admin = true;
-      return next();
-    }
 
     if (!bearer) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    const decoded = jwt.verify(bearer, JWT_SECRET);
+    let decoded;
+    try {
+      decoded = jwt.verify(bearer, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
     const ctx = await hydrateAuthFromDecoded(decoded);
     if (ctx?.role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });

@@ -142,6 +142,10 @@ const bookingSchema = new mongoose.Schema(
     /** True after walletBalance was decremented for walletDiscount. */
     walletDeducted: { type: Boolean, default: false },
     amountPerSession: { type: Number, min: 0, default: null },
+    /** Physio's flat per-session rate locked at assignment (manager-led plans). Payout basis. */
+    physioRatePerSession: { type: Number, min: 0, default: null },
+    /** Flat manager commission per session (INR), snapshot from platform settings at plan creation. */
+    managerCommissionPerSession: { type: Number, min: 0, default: null },
     /** Captured straight-line distance between patient and assigned physio at assignment time (km). */
     distanceKmAtAssign: { type: Number, min: 0, default: null },
     /** Extra chargeable km above base radius, computed with floor rule. */

@@ -302,6 +302,14 @@ function rollupBookingSessionStatus(booking) {
     booking.sessionStatus = 'completed';
     booking.status = 'completed';
   }
+  // Manager-led workflow: sessions underway → in_treatment; all done → completed.
+  if (booking.managerId && booking.workflowStatus) {
+    if (hasCompleted && allTerminal) {
+      booking.workflowStatus = 'completed';
+    } else if (hasCompleted && booking.workflowStatus === 'payment_recorded') {
+      booking.workflowStatus = 'in_treatment';
+    }
+  }
 }
 
 /**

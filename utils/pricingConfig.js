@@ -6,7 +6,9 @@ import {
   DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
   DEFAULT_DISTANCE_SURCHARGE_PER_KM,
   DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
+  DEFAULT_MANAGER_COMMISSION_PER_SESSION,
   DEFAULT_PHYSIO_PRICE_PER_SESSION,
+  DEFAULT_PLATFORM_COMMISSION_PER_SESSION,
   DEFAULT_PLAN_MILESTONES,
   DEFAULT_PLAN_TIERS,
   DEFAULT_PLATFORM_COMMISSION_PERCENT,
@@ -41,6 +43,28 @@ function envCommissionPercent() {
   const b = Number(process.env.PLATFORM_FEE_PERCENT);
   if (Number.isFinite(b) && b >= 0 && b <= 100) return b;
   return DEFAULT_PLATFORM_COMMISSION_PERCENT;
+}
+
+function envCommissionPerSession(defaultBookingAmountRupees) {
+  const direct = Number(process.env.PLATFORM_COMMISSION_PER_SESSION);
+  if (Number.isFinite(direct) && direct >= 0) return direct;
+  if (defaultBookingAmountRupees > 0) {
+    const pct = envCommissionPercent();
+    return Math.round(((defaultBookingAmountRupees * pct) / 100 + Number.EPSILON) * 100) / 100;
+  }
+  return DEFAULT_PLATFORM_COMMISSION_PER_SESSION;
+}
+
+function resolvePlatformCommissionPerSession(doc, defaultBookingAmountRupees) {
+  const raw = doc?.platformCommissionPerSessionRupees;
+  if (raw !== null && raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= PRICING_MONEY_MAX) {
+      return Math.round(n * 100) / 100;
+    }
+  }
+  const pct = readPercent(doc, 'platformCommissionPercent', envCommissionPercent());
+  return Math.round(((defaultBookingAmountRupees * pct) / 100 + Number.EPSILON) * 100) / 100;
 }
 
 function readMoney(doc, field, fallback) {
@@ -115,11 +139,14 @@ async function buildSnapshot() {
     'defaultBookingAmountRupees',
     envDefaultBookingAmount(),
   );
-  const platformCommissionPercent = readPercent(
+  const platformCommissionPerSessionRupees = resolvePlatformCommissionPerSession(
     doc,
-    'platformCommissionPercent',
-    envCommissionPercent(),
+    defaultBookingAmountRupees,
   );
+  const platformCommissionPercent =
+    defaultBookingAmountRupees > 0
+      ? Math.round((platformCommissionPerSessionRupees / defaultBookingAmountRupees) * 10000) / 100
+      : envCommissionPercent();
   const distanceSurchargeBaseKm = readPercent(
     doc,
     'distanceSurchargeBaseKm',
@@ -142,17 +169,24 @@ async function buildSnapshot() {
     'defaultPhysioPricePerSession',
     DEFAULT_PHYSIO_PRICE_PER_SESSION,
   );
+  const managerCommissionPerSessionRupees = readMoney(
+    doc,
+    'managerCommissionPerSessionRupees',
+    DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+  );
   const planTiers = normalizePlanTiers(doc?.planTiers);
   const planMilestones = normalizeMilestonesMap(doc?.planMilestones);
   const allowedPlanSessionCounts = [...ALLOWED_PLAN_SESSION_COUNTS];
 
   return {
     defaultBookingAmountRupees,
+    platformCommissionPerSessionRupees,
     platformCommissionPercent,
     distanceSurchargeBaseKm,
     distanceSurchargePerKmRupees,
     homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession,
+    managerCommissionPerSessionRupees,
     allowedPlanSessionCounts,
     planTiers,
     planMilestones,
@@ -180,15 +214,25 @@ function snapshotOrFallback() {
   if (cache) return cache;
   return {
     defaultBookingAmountRupees: envDefaultBookingAmount(),
+    platformCommissionPerSessionRupees: envCommissionPerSession(envDefaultBookingAmount()),
     platformCommissionPercent: envCommissionPercent(),
     distanceSurchargeBaseKm: DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
     distanceSurchargePerKmRupees: DEFAULT_DISTANCE_SURCHARGE_PER_KM,
     homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
     defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
+    managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
     allowedPlanSessionCounts: [...ALLOWED_PLAN_SESSION_COUNTS],
     planTiers: DEFAULT_PLAN_TIERS.map((t) => ({ ...t })),
     planMilestones: normalizeMilestonesMap(null),
   };
+}
+
+export function getManagerCommissionPerSessionSync() {
+  return snapshotOrFallback().managerCommissionPerSessionRupees;
+}
+
+export function getPlatformCommissionPerSessionSync() {
+  return snapshotOrFallback().platformCommissionPerSessionRupees;
 }
 
 export function getPlatformCommissionPercentSync() {
@@ -248,11 +292,13 @@ export async function getPublicPricingSettings() {
   const s = await getPricingSnapshot();
   return {
     defaultBookingAmountRupees: s.defaultBookingAmountRupees,
+    platformCommissionPerSessionRupees: s.platformCommissionPerSessionRupees,
     platformCommissionPercent: s.platformCommissionPercent,
     distanceSurchargeBaseKm: s.distanceSurchargeBaseKm,
     distanceSurchargePerKmRupees: s.distanceSurchargePerKmRupees,
     homePlanMaxDiscountPercent: s.homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession: s.defaultPhysioPricePerSession,
+    managerCommissionPerSessionRupees: s.managerCommissionPerSessionRupees,
     allowedPlanSessionCounts: s.allowedPlanSessionCounts,
     planTiers: s.planTiers,
     planMilestones: s.planMilestones,
@@ -265,11 +311,13 @@ export async function getAdminPricingSettings() {
     ...s,
     defaults: {
       defaultBookingAmountRupees: envDefaultBookingAmount(),
+      platformCommissionPerSessionRupees: envCommissionPerSession(envDefaultBookingAmount()),
       platformCommissionPercent: envCommissionPercent(),
       distanceSurchargeBaseKm: DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
       distanceSurchargePerKmRupees: DEFAULT_DISTANCE_SURCHARGE_PER_KM,
       homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
       defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
+      managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
       planTiers: DEFAULT_PLAN_TIERS,
       planMilestones: DEFAULT_PLAN_MILESTONES,
     },
@@ -314,6 +362,13 @@ export function normalizePricingPatch(body) {
     } else out.defaultBookingAmountRupees = Math.round(n * 100) / 100;
   }
 
+  if (body?.platformCommissionPerSessionRupees !== undefined) {
+    const n = Number(body.platformCommissionPerSessionRupees);
+    if (!Number.isFinite(n) || n < 0 || n > PRICING_MONEY_MAX) {
+      errors.push('platformCommissionPerSessionRupees must be between 0 and 50000');
+    } else out.platformCommissionPerSessionRupees = Math.round(n * 100) / 100;
+  }
+
   if (body?.platformCommissionPercent !== undefined) {
     const n = Number(body.platformCommissionPercent);
     if (!Number.isFinite(n) || n < 0 || n > 100) {
@@ -347,6 +402,13 @@ export function normalizePricingPatch(body) {
     if (!Number.isFinite(n) || n < 0 || n > PRICING_MONEY_MAX) {
       errors.push('defaultPhysioPricePerSession must be between 0 and 50000');
     } else out.defaultPhysioPricePerSession = Math.round(n * 100) / 100;
+  }
+
+  if (body?.managerCommissionPerSessionRupees !== undefined) {
+    const n = Number(body.managerCommissionPerSessionRupees);
+    if (!Number.isFinite(n) || n < 0 || n > PRICING_MONEY_MAX) {
+      errors.push('managerCommissionPerSessionRupees must be between 0 and 50000');
+    } else out.managerCommissionPerSessionRupees = Math.round(n * 100) / 100;
   }
 
   const maxDisc = out.homePlanMaxDiscountPercent ?? getHomePlanMaxDiscountPercentSync();
@@ -404,11 +466,13 @@ export async function applyPricingPatch(patch) {
   const $set = { ...patch };
   if (
     patch.defaultBookingAmountRupees != null ||
+    patch.platformCommissionPerSessionRupees != null ||
     patch.platformCommissionPercent != null ||
     patch.distanceSurchargeBaseKm != null ||
     patch.distanceSurchargePerKmRupees != null ||
     patch.homePlanMaxDiscountPercent != null ||
-    patch.defaultPhysioPricePerSession != null
+    patch.defaultPhysioPricePerSession != null ||
+    patch.managerCommissionPerSessionRupees != null
   ) {
     $set.pricingUpdatedAt = now;
   }
@@ -427,10 +491,12 @@ export async function resetPricingToDefaults() {
       $set: {
         defaultBookingAmountRupees: null,
         platformCommissionPercent: null,
+        platformCommissionPerSessionRupees: null,
         distanceSurchargeBaseKm: null,
         distanceSurchargePerKmRupees: null,
         homePlanMaxDiscountPercent: null,
         defaultPhysioPricePerSession: null,
+        managerCommissionPerSessionRupees: null,
         planTiers: undefined,
         planMilestones: undefined,
         pricingUpdatedAt: null,

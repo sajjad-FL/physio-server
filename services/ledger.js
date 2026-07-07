@@ -1,8 +1,11 @@
 import mongoose from 'mongoose';
 import Transaction from '../models/Transaction.js';
-import { roundMoney2 } from '../utils/marketplacePayment.js';
+import {
+  roundMoney2,
+  computeMarketplaceSplit,
+  inferCommissionSessionCount,
+} from '../utils/marketplacePayment.js';
 import { computeCommissionDue } from '../utils/ledgerBalance.js';
-import { getPlatformCommissionPercent } from '../config/commission.js';
 
 const POSTED = 'posted';
 
@@ -13,11 +16,9 @@ function splitFromBooking(booking) {
   return { gross, commission, physioEarning };
 }
 
-function splitFromAmount(amountRupees) {
-  const amount = roundMoney2(Math.max(0, Number(amountRupees) || 0));
-  const pct = getPlatformCommissionPercent();
-  const commission = roundMoney2((amount * pct) / 100);
-  const physioEarning = roundMoney2(Math.max(0, amount - commission));
+function splitFromAmount(amountRupees, booking, payment) {
+  const sessionCount = inferCommissionSessionCount(amountRupees, booking, payment);
+  const { amount, commission, physioEarning } = computeMarketplaceSplit(amountRupees, sessionCount);
   return { gross: amount, commission, physioEarning };
 }
 
@@ -115,7 +116,7 @@ export async function postOfflinePair(booking) {
 export async function postOnlineInstallmentCredit(booking, payment) {
   const physioId = booking.physioId;
   if (!physioId) return { created: false, reason: 'no_physio' };
-  const { gross, commission, physioEarning } = splitFromAmount(payment.amount);
+  const { gross, commission, physioEarning } = splitFromAmount(payment.amount, booking, payment);
   if (!Number.isFinite(physioEarning) || physioEarning <= 0) {
     return { created: false, reason: 'no_earning' };
   }
@@ -157,7 +158,7 @@ export async function postOnlineInstallmentCredit(booking, payment) {
 export async function postOfflineInstallmentPair(booking, payment) {
   const physioId = booking.physioId;
   if (!physioId) return { created: false, reason: 'no_physio' };
-  const { gross, commission } = splitFromAmount(payment.amount);
+  const { gross, commission } = splitFromAmount(payment.amount, booking, payment);
   if (!Number.isFinite(gross) || gross <= 0) return { created: false, reason: 'no_gross' };
 
   const paymentId = String(payment._id);

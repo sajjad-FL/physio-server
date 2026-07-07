@@ -5,8 +5,12 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import Payment from '../models/Payment.js';
 import ManagerLedgerEntry from '../models/ManagerLedgerEntry.js';
 import ServiceZone from '../models/ServiceZone.js';
+import Transaction from '../models/Transaction.js';
+import WithdrawRequest from '../models/WithdrawRequest.js';
+import { computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
+import { previewDistribution } from '../services/managerSettlement.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
-import { computeDistanceSurcharge } from '../utils/pricingConfig.js';
+import { computeDistanceSurcharge, getManagerCommissionPerSessionSync } from '../utils/pricingConfig.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
 import { isPlanLive } from '../utils/planStatus.js';
 import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
@@ -47,12 +51,22 @@ async function computeOutstanding(booking) {
   return roundMoney2(Math.max(0, totalAmount - claimed));
 }
 
-async function createLedgerForCollection({ managerId, bookingId, paymentId, amount, recordedBy, note, session }) {
+async function createLedgerForCollection({
+  managerId,
+  bookingId,
+  paymentId,
+  amount,
+  managerCommissionAmount = null,
+  recordedBy,
+  note,
+  session,
+}) {
   const payload = {
     managerId,
     bookingId,
     paymentId,
     amount,
+    managerCommissionAmount,
     direction: 'credit',
     status: 'open',
     collectedAt: new Date(),
@@ -218,16 +232,30 @@ export async function managerCreatePlan(req, res, next) {
       return res.status(400).json({ message: 'Plan can be created only for home service' });
     }
 
-    let physioRate = null;
+    // Manager sets the patient price freely (may exceed the physio's flat rate —
+    // the margin funds the manager commission and platform share).
+    const validated = validateHomePlanInput(req.body);
+    if (validated.error) return res.status(400).json({ message: validated.error });
+
+    const commissionPerSession = getManagerCommissionPerSessionSync();
+
+    // If a physio is already assigned, the discounted patient price must cover
+    // his flat rate plus the manager commission.
     if (booking.physioId) {
       const physioRateDoc = await Physiotherapist.findById(booking.physioId).select('pricePerSession').lean();
-      physioRate = Number(physioRateDoc?.pricePerSession);
+      const physioRate = Number(physioRateDoc?.pricePerSession);
+      if (Number.isFinite(physioRate) && physioRate > 0) {
+        const discounted = roundMoney2(
+          validated.amountPerSession * (1 - (validated.discountPercent || 0) / 100),
+        );
+        if (discounted < physioRate + commissionPerSession) {
+          return res.status(400).json({
+            message: `Patient price ₹${discounted}/session after discount cannot cover the physiotherapist rate ₹${physioRate} + manager commission ₹${commissionPerSession}`,
+          });
+        }
+        booking.physioRatePerSession = physioRate;
+      }
     }
-
-    const validated = validateHomePlanInput(req.body, {
-      requirePhysioRate: Number.isFinite(physioRate) && physioRate > 0 ? physioRate : null,
-    });
-    if (validated.error) return res.status(400).json({ message: validated.error });
 
     try {
       applyHomePlanFields(booking, {
@@ -240,6 +268,10 @@ export async function managerCreatePlan(req, res, next) {
     } catch (e) {
       return res.status(e.statusCode || 400).json({ message: e.message });
     }
+
+    // Snapshot the flat commission so later collections/settlements use the
+    // rate that was in force when this plan was created.
+    booking.managerCommissionPerSession = commissionPerSession;
 
     await booking.save();
 
@@ -302,10 +334,31 @@ export async function managerAssignPhysio(req, res, next) {
       return res.status(409).json({ message: 'This physiotherapist already has another booking in that time slot' });
     }
 
+    // The discounted patient price must cover the physio's flat rate plus the
+    // manager commission — otherwise settlement could not pay both.
+    const commissionPerSession =
+      booking.managerCommissionPerSession ?? getManagerCommissionPerSessionSync();
+    const physioRate = Number(physio.pricePerSession);
+    if (booking.amountPerSession && Number.isFinite(physioRate) && physioRate > 0) {
+      const discounted = roundMoney2(
+        Number(booking.amountPerSession) * (1 - (booking.discountPercent || 0) / 100),
+      );
+      if (discounted < physioRate + commissionPerSession) {
+        return res.status(400).json({
+          message: `Patient price ₹${discounted}/session after discount cannot cover this physiotherapist's rate ₹${physioRate} + manager commission ₹${commissionPerSession}. Pick a physiotherapist with a lower rate or revise the plan.`,
+        });
+      }
+    }
+
     const patient = await User.findById(booking.userId).select('coordinates').lean();
     const surchargeMeta = computeDistanceSurcharge(patient?.coordinates, physio.coordinates);
 
     booking.physioId = physioId;
+    // Lock the flat payout rate at assignment time (payout basis at settlement).
+    booking.physioRatePerSession = Number.isFinite(physioRate) && physioRate > 0 ? physioRate : null;
+    if (booking.managerCommissionPerSession == null) {
+      booking.managerCommissionPerSession = commissionPerSession;
+    }
     booking.physioAssignedBy = managerId;
     booking.status = 'accepted';
     booking.sessionStatus = 'scheduled';
@@ -410,6 +463,18 @@ export async function managerRecordCollection(req, res, next) {
       meta: { managerId, recordedByUserId: managerId },
     };
 
+    // Proportional commission accrual: this collection's share of the plan's
+    // total flat commission (commissionPerSession × sessions). Paid out when
+    // the admin settles the cash hand-off; shown as "pending" until then.
+    const commissionPerSession =
+      booking.managerCommissionPerSession ?? getManagerCommissionPerSessionSync();
+    const planSessions = Math.max(1, Number(booking.sessions) || booking.schedule?.length || 1);
+    const planTotal = Number(booking.totalAmount || 0);
+    const managerCommissionAmount =
+      planTotal > 0 && commissionPerSession > 0
+        ? roundMoney2(amount * ((commissionPerSession * planSessions) / planTotal))
+        : 0;
+
     booking.paymentCollectedBy = managerId;
     booking.paymentCollectionStatus = amount >= outstanding - 0.009 ? 'recorded' : 'partial';
     booking.workflowStatus = 'payment_recorded';
@@ -435,6 +500,7 @@ export async function managerRecordCollection(req, res, next) {
           bookingId: booking._id,
           paymentId: payment._id,
           amount,
+          managerCommissionAmount,
           recordedBy: managerId,
           note,
           session,
@@ -451,6 +517,7 @@ export async function managerRecordCollection(req, res, next) {
           bookingId: booking._id,
           paymentId: payment._id,
           amount,
+          managerCommissionAmount,
           recordedBy: managerId,
           note,
         });
@@ -527,6 +594,83 @@ export async function listManagerLedger(req, res, next) {
       .reduce((s, e) => s + Number(e.amount || 0), 0);
 
     return res.json({ entries: shaped, openTotal: roundMoney2(openTotal) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Manager earnings wallet:
+ * - pendingCommission — accrued on open/batched collections, paid at settlement
+ * - settledCommission / withdrawn / availableBalance — from manager Transaction rows
+ * - cashToRemit — collected cash not yet settled with admin (open + batched)
+ */
+export async function getManagerWallet(req, res, next) {
+  try {
+    const managerId = req.user?.id;
+
+    const unsettled = await ManagerLedgerEntry.find({
+      managerId,
+      direction: 'credit',
+      status: { $in: ['open', 'batched'] },
+    }).lean();
+
+    const preview = await previewDistribution(unsettled);
+    const balance = await computeManagerCommissionBalance(managerId);
+    const cashToRemit = roundMoney2(unsettled.reduce((s, e) => s + Number(e.amount || 0), 0));
+    const totalCollected = await ManagerLedgerEntry.aggregate([
+      {
+        $match: {
+          managerId: new mongoose.Types.ObjectId(String(managerId)),
+          direction: 'credit',
+          status: { $ne: 'disputed' },
+        },
+      },
+      { $group: { _id: null, sum: { $sum: '$amount' } } },
+    ]);
+    const pendingWithdraw = await WithdrawRequest.findOne({ managerId, status: 'pending' }).lean();
+
+    return res.json({
+      pendingCommission: preview.managerTotal,
+      settledCommission: balance.settledCommission,
+      withdrawn: balance.withdrawn,
+      availableBalance: balance.availableBalance,
+      cashToRemit,
+      totalCollected: roundMoney2(totalCollected[0]?.sum || 0),
+      pendingWithdraw,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Paginated manager money movements (commission credits + withdrawal debits). */
+export async function listManagerWalletTransactions(req, res, next) {
+  try {
+    const managerId = req.user?.id;
+    const page = Math.max(1, Number(req.query?.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(req.query?.limit) || 20));
+
+    const filter = {
+      userId: managerId,
+      type: { $in: ['manager_commission', 'manager_withdrawal'] },
+      status: 'posted',
+    };
+    const [rows, total] = await Promise.all([
+      Transaction.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .populate({
+          path: 'bookingId',
+          select: 'issue date timeSlot userId',
+          populate: { path: 'userId', select: 'name' },
+        })
+        .lean(),
+      Transaction.countDocuments(filter),
+    ]);
+
+    return res.json({ transactions: rows, total, page, limit });
   } catch (err) {
     next(err);
   }

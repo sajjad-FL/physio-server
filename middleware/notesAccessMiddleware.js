@@ -4,7 +4,7 @@ import { hydrateAuthFromDecoded, JWT_SECRET } from '../utils/authResolve.js';
 import { requireCompleteProfile } from './requireCompleteProfile.js';
 
 /**
- * Allows admin (Bearer ADMIN_API_KEY), JWT with admin role, patient JWT, or physio JWT to read notes.
+ * Allows a JWT with admin role, patient JWT, or physio JWT to read notes.
  */
 export async function requireNotesAccess(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -13,12 +13,6 @@ export async function requireNotesAccess(req, res, next) {
   }
 
   const token = authHeader.slice('Bearer '.length);
-  const adminKey = process.env.ADMIN_API_KEY;
-
-  if (adminKey && token === adminKey) {
-    req.admin = true;
-    return next();
-  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);

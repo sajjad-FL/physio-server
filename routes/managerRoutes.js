@@ -12,7 +12,13 @@ import {
   listManagerLedger,
   listManagerZones,
   listZonePhysios,
+  getManagerWallet,
+  listManagerWalletTransactions,
 } from '../controllers/managerController.js';
+import {
+  createManagerWithdrawRequest,
+  getManagerPendingWithdraw,
+} from '../controllers/withdrawController.js';
 import { rescheduleBooking, deleteAdminBookingSession } from '../controllers/bookingController.js';
 
 const router = Router();
@@ -32,6 +38,10 @@ router.post('/bookings/:id/collections', ...managerChain, managerRecordCollectio
 router.patch('/bookings/:id/reschedule', ...managerChain, rescheduleBooking);
 router.delete('/bookings/:id/sessions/:sessionId', ...managerChain, deleteAdminBookingSession);
 router.get('/ledger', ...managerChain, listManagerLedger);
+router.get('/wallet', ...managerChain, getManagerWallet);
+router.get('/wallet/transactions', ...managerChain, listManagerWalletTransactions);
+router.get('/withdraw/pending', ...managerChain, getManagerPendingWithdraw);
+router.post('/withdraw', ...managerChain, createManagerWithdrawRequest);
 router.get('/zones/me', ...managerChain, listManagerZones);
 router.get('/physios', ...managerChain, listZonePhysios);
 

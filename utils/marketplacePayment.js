@@ -1,5 +1,5 @@
 import Physiotherapist from '../models/Physiotherapist.js';
-import { getPlatformCommissionPercent } from '../config/commission.js';
+import { getPlatformCommissionPerSessionSync } from '../utils/pricingConfig.js';
 import {
   postOfflinePair,
   postOnlineCredit,
@@ -12,15 +12,33 @@ export function roundMoney2(n) {
 }
 
 /**
- * @param {number} amountRupees - gross amount (patient pays)
- * @returns {{ amount: number, commission: number, physioEarning: number }}
+ * Infer how many sessions a payment amount covers (for flat per-session commission).
  */
-export function computeMarketplaceSplit(amountRupees) {
+export function inferCommissionSessionCount(amountRupees, booking, payment) {
+  if (payment?.sessionId) return 1;
+  const sessions = Number(booking?.sessions);
+  const total = Number(booking?.totalAmount);
+  const amount = Number(amountRupees);
+  if (sessions > 0 && total > 0 && Number.isFinite(amount) && amount > 0) {
+    const avgPerSession = total / sessions;
+    const n = Math.round(amount / avgPerSession);
+    return Math.max(1, Math.min(sessions, n || 1));
+  }
+  return 1;
+}
+
+/**
+ * @param {number} amountRupees - gross amount (patient pays)
+ * @param {number} [sessionCount=1] - sessions this amount covers
+ * @returns {{ amount: number, commission: number, physioEarning: number, sessionCount: number }}
+ */
+export function computeMarketplaceSplit(amountRupees, sessionCount = 1) {
   const amount = roundMoney2(Math.max(0, Number(amountRupees) || 0));
-  const pct = getPlatformCommissionPercent();
-  const commission = roundMoney2((amount * pct) / 100);
+  const sessions = Math.max(1, Math.round(Number(sessionCount) || 1));
+  const perSession = getPlatformCommissionPerSessionSync();
+  const commission = roundMoney2(Math.min(amount, perSession * sessions));
   const physioEarning = roundMoney2(Math.max(0, amount - commission));
-  return { amount, commission, physioEarning };
+  return { amount, commission, physioEarning, sessionCount: sessions };
 }
 
 /**

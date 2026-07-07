@@ -600,7 +600,7 @@ export async function updateBooking(req, res, next) {
       const subtotal = amountPerSession * sessionsCount;
       const discounted = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
       const totalAmount = Math.round((discounted + surchargeMeta.distanceSurchargeAmount + Number.EPSILON) * 100) / 100;
-      const split = computeMarketplaceSplit(totalAmount);
+      const split = computeMarketplaceSplit(totalAmount, sessionsCount);
 
       updates.amountPerSession = amountPerSession;
       updates.distanceKmAtAssign = surchargeMeta.distanceKmAtAssign;

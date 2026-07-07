@@ -20,6 +20,10 @@ const managerSettlementBatchSchema = new mongoose.Schema(
     },
     settledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     settledAt: { type: Date, default: null },
+    /** Totals distributed when this batch was settled (audit). */
+    commissionTotal: { type: Number, min: 0, default: 0 },
+    physioPayoutTotal: { type: Number, min: 0, default: 0 },
+    distributedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

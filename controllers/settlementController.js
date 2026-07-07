@@ -4,7 +4,9 @@ import ManagerSettlementBatch from '../models/ManagerSettlementBatch.js';
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
+import Transaction from '../models/Transaction.js';
 import { recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
+import { distributeSettlementBatch, previewDistribution } from '../services/managerSettlement.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -46,18 +48,40 @@ async function shapeSettlementBatches(batches) {
     })
     .lean();
   const byId = new Map(populated.map((b) => [String(b._id), b]));
-  return batches.map((batch) => {
-    const full = byId.get(String(batch._id));
-    const rawEntries = full?.ledgerEntryIds || [];
-    const entries = rawEntries
-      .filter((e) => e && typeof e === 'object')
-      .map(shapeLedgerEntry);
-    return {
-      ...batch,
-      entryCount: entries.length,
-      entries,
-    };
-  });
+  return Promise.all(
+    batches.map(async (batch) => {
+      const full = byId.get(String(batch._id));
+      const rawEntries = full?.ledgerEntryIds || [];
+      const entries = rawEntries
+        .filter((e) => e && typeof e === 'object')
+        .map(shapeLedgerEntry);
+      // Open batches: dry-run "what happens on settle". Settled: stored totals.
+      const distributionPreview =
+        batch.status === 'open' ? await previewDistribution(entries) : null;
+      return {
+        ...batch,
+        entryCount: entries.length,
+        entries,
+        distributionPreview,
+      };
+    }),
+  );
+}
+
+/** Total commission already credited to a manager (posted manager_commission rows). */
+async function sumSettledCommission(managerId) {
+  const rows = await Transaction.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(String(managerId)),
+        type: 'manager_commission',
+        direction: 'credit',
+        status: 'posted',
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$totalAmount' } } },
+  ]);
+  return roundMoney2(rows[0]?.total || 0);
 }
 
 export async function getManagerLedgerAdmin(req, res, next) {
@@ -83,6 +107,14 @@ export async function getManagerLedgerAdmin(req, res, next) {
       .filter((e) => e.status === 'open' && e.direction === 'credit')
       .reduce((s, e) => s + Number(e.amount || 0), 0);
 
+    // Commission owed to this manager: accrues on open/batched collections,
+    // becomes "settled" (withdrawable) once the cash hand-off is settled.
+    const pendingCommissionEntries = shapedEntries.filter(
+      (e) => (e.status === 'open' || e.status === 'batched') && e.direction === 'credit',
+    );
+    const pendingPreview = await previewDistribution(pendingCommissionEntries);
+    const settledCommission = await sumSettledCommission(managerId);
+
     const rawBatches = await ManagerSettlementBatch.find({ managerId })
       .sort({ createdAt: -1 })
       .limit(20)
@@ -93,6 +125,8 @@ export async function getManagerLedgerAdmin(req, res, next) {
       manager,
       entries: shapedEntries,
       openTotal: roundMoney2(openTotal),
+      pendingCommission: pendingPreview.managerTotal,
+      settledCommission,
       batches,
     });
   } catch (err) {
@@ -166,9 +200,17 @@ export async function settleBatch(req, res, next) {
       return res.status(400).json({ message: 'Batch already settled' });
     }
 
+    // Cash is in hand — distribute BEFORE flipping status: credit each physio
+    // his flat share and the manager her commission. Idempotent per entry, so
+    // a crash here is fixed by retrying settle (batch is still open).
+    const { physioPayoutTotal, commissionTotal } = await distributeSettlementBatch(batch);
+
     batch.status = 'settled';
     batch.settledBy = adminId;
     batch.settledAt = new Date();
+    batch.physioPayoutTotal = physioPayoutTotal;
+    batch.commissionTotal = commissionTotal;
+    batch.distributedAt = new Date();
     await batch.save();
 
     await ManagerLedgerEntry.updateMany(
@@ -210,6 +252,11 @@ export async function disputeBatch(req, res, next) {
 
     const batch = await ManagerSettlementBatch.findById(batchId);
     if (!batch) return res.status(404).json({ message: 'Batch not found' });
+    if (batch.distributedAt) {
+      return res.status(400).json({
+        message: 'This batch was already distributed (physio/manager credited) — reverse the postings manually before disputing',
+      });
+    }
 
     batch.status = 'disputed';
     batch.notes = [batch.notes, `Disputed: ${reason}`].filter(Boolean).join('\n');
