@@ -12,7 +12,7 @@ import { previewDistribution } from '../services/managerSettlement.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
 import { computeDistanceSurcharge, getManagerCommissionPerSessionSync } from '../utils/pricingConfig.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
-import { isPlanLive } from '../utils/planStatus.js';
+import { isPlanLive, isAwaitingPatientConsent } from '../utils/planStatus.js';
 import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
@@ -232,9 +232,15 @@ export async function managerCreatePlan(req, res, next) {
       return res.status(400).json({ message: 'Plan can be created only for home service' });
     }
 
+    if (isPlanLive(booking.planStatus)) {
+      return res.status(400).json({ message: 'Plan cannot be edited after the patient has consented' });
+    }
+
+    const isUpdate = isAwaitingPatientConsent(booking.planStatus);
+
     // Manager sets the patient price freely (may exceed the physio's flat rate —
     // the margin funds the manager commission and platform share).
-    const validated = validateHomePlanInput(req.body);
+    const validated = validateHomePlanInput(req.body, { excludeAssessmentDate: booking.date });
     if (validated.error) return res.status(400).json({ message: validated.error });
 
     const commissionPerSession = getManagerCommissionPerSessionSync();
@@ -277,8 +283,10 @@ export async function managerCreatePlan(req, res, next) {
 
     fireBookingPush(async () => {
       await notifyExpoUsers([booking.userId], {
-        title: 'Your care plan is ready',
-        body: 'Review and consent to your home care plan in the app.',
+        title: isUpdate ? 'Your care plan was updated' : 'Your care plan is ready',
+        body: isUpdate
+          ? 'Your care manager updated the plan. Review and consent in the app.'
+          : 'Review and consent to your home care plan in the app.',
         data: { kind: 'plan_awaiting_consent', bookingId: String(booking._id) },
       });
     });

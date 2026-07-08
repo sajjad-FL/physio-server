@@ -66,7 +66,7 @@ export function applyHomePlanFields(booking, input) {
   };
 }
 
-export function validateHomePlanInput(body, { requirePhysioRate = null } = {}) {
+export function validateHomePlanInput(body, { requirePhysioRate = null, excludeAssessmentDate = null } = {}) {
   const sessions = Number(body?.sessions);
   const amountPerSession = Number(body?.amountPerSession);
   const billingType = normalizeBillingType(body?.billingType);
@@ -83,10 +83,17 @@ export function validateHomePlanInput(body, { requirePhysioRate = null } = {}) {
     return { error: 'schedule must match the number of sessions' };
   }
   const schedule = [];
+  const blockedDate = String(excludeAssessmentDate || '').trim();
   for (const item of body.schedule) {
     const date = String(item?.date || '').trim();
     const time = String(item?.time || '').trim();
     if (!date || !time) return { error: 'Each schedule entry needs date and time' };
+    if (blockedDate && date === blockedDate) {
+      return {
+        error:
+          'The initial assessment visit date is complimentary and cannot be included in the treatment schedule.',
+      };
+    }
     schedule.push({ date, time });
   }
   if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {

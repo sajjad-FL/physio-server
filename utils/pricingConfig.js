@@ -273,10 +273,13 @@ export function getPlanTierForSessionsSync(sessionsCount) {
 export function resolveHomePlanDiscount({ sessions, billingType }) {
   if (billingType !== 'full') return 0;
   const tier = getPlanTierForSessionsSync(sessions);
-  const maxDiscount = getHomePlanMaxDiscountPercentSync();
   const raw = Number(tier?.defaultDiscountPercent ?? 0);
   if (!Number.isFinite(raw) || raw < 0) return 0;
-  return Math.min(maxDiscount, Math.round(raw * 100) / 100);
+  const maxDiscount = getHomePlanMaxDiscountPercentSync();
+  const rounded = Math.round(raw * 100) / 100;
+  // Tier discount is admin-configured per plan length; cap only guards bad data.
+  if (rounded > maxDiscount) return maxDiscount;
+  return rounded;
 }
 
 export function getRequiredPctForSessionSync(sessionsCount, sessionOrdinal) {
@@ -317,6 +320,8 @@ export async function getPublicPricingSettings() {
     allowedPlanSessionCounts: s.allowedPlanSessionCounts,
     planTiers: s.planTiers,
     planMilestones: s.planMilestones,
+    pricingUpdatedAt: s.pricingUpdatedAt ?? null,
+    planTiersUpdatedAt: s.planTiersUpdatedAt ?? null,
   };
 }
 
