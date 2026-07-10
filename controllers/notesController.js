@@ -57,10 +57,18 @@ export async function getNotesByBooking(req, res, next) {
 
     const note = await SessionNote.findOne({ bookingId }).populate('createdBy', 'name').lean();
     if (!note) {
-      return res.status(404).json({ message: 'Notes not found' });
+      // No SOAP clinical notes yet — not an error (physio may not have filled them).
+      return res.json({
+        bookingId,
+        symptoms: '',
+        diagnosis: '',
+        treatmentPlan: '',
+        notes: '',
+        empty: true,
+      });
     }
 
-    return res.json(note);
+    return res.json({ ...note, empty: false });
   } catch (err) {
     next(err);
   }
