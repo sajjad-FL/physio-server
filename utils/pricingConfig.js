@@ -12,6 +12,8 @@ import {
   DEFAULT_PLAN_MILESTONES,
   DEFAULT_PLAN_TIERS,
   DEFAULT_PLATFORM_COMMISSION_PERCENT,
+  DEFAULT_TECHNIQUE_PRICES,
+  TECHNIQUE_ISSUES,
 } from '../constants/pricingDefaults.js';
 
 const SINGLETON_ID = 'singleton';
@@ -132,6 +134,18 @@ function normalizePlanTiers(raw) {
   });
 }
 
+function normalizeTechniquePrices(raw) {
+  const out = { ...DEFAULT_TECHNIQUE_PRICES };
+  if (!raw || typeof raw !== 'object') return out;
+  for (const issue of TECHNIQUE_ISSUES) {
+    const n = Number(raw[issue]);
+    if (Number.isFinite(n) && n > 0 && n <= PRICING_MONEY_MAX) {
+      out[issue] = Math.round(n * 100) / 100;
+    }
+  }
+  return out;
+}
+
 async function buildSnapshot() {
   const doc = await ensureSingletonLean();
   const defaultBookingAmountRupees = readMoney(
@@ -176,6 +190,7 @@ async function buildSnapshot() {
   );
   const planTiers = normalizePlanTiers(doc?.planTiers);
   const planMilestones = normalizeMilestonesMap(doc?.planMilestones);
+  const techniquePrices = normalizeTechniquePrices(doc?.techniquePrices);
   const allowedPlanSessionCounts = [...ALLOWED_PLAN_SESSION_COUNTS];
 
   return {
@@ -187,6 +202,7 @@ async function buildSnapshot() {
     homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees,
+    techniquePrices,
     allowedPlanSessionCounts,
     planTiers,
     planMilestones,
@@ -221,6 +237,7 @@ function snapshotOrFallback() {
     homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
     defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
     managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+    techniquePrices: { ...DEFAULT_TECHNIQUE_PRICES },
     allowedPlanSessionCounts: [...ALLOWED_PLAN_SESSION_COUNTS],
     planTiers: DEFAULT_PLAN_TIERS.map((t) => ({ ...t })),
     planMilestones: normalizeMilestonesMap(null),
@@ -241,6 +258,19 @@ export function getPlatformCommissionPercentSync() {
 
 export function getDefaultBookingAmountRupeesSync() {
   return snapshotOrFallback().defaultBookingAmountRupees;
+}
+
+/** Price for a technique issue (INR). Falls back to default session price if unknown. */
+export function getTechniquePriceSync(issue) {
+  const key = String(issue || '').trim();
+  const prices = snapshotOrFallback().techniquePrices || DEFAULT_TECHNIQUE_PRICES;
+  const n = Number(prices[key]);
+  if (Number.isFinite(n) && n > 0) return n;
+  return snapshotOrFallback().defaultBookingAmountRupees;
+}
+
+export function isTechniqueIssue(issue) {
+  return TECHNIQUE_ISSUES.includes(String(issue || '').trim());
 }
 
 export function getDistanceSurchargeConfigSync() {
@@ -317,6 +347,7 @@ export async function getPublicPricingSettings() {
     homePlanMaxDiscountPercent: s.homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession: s.defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees: s.managerCommissionPerSessionRupees,
+    techniquePrices: s.techniquePrices,
     allowedPlanSessionCounts: s.allowedPlanSessionCounts,
     planTiers: s.planTiers,
     planMilestones: s.planMilestones,
@@ -338,6 +369,7 @@ export async function getAdminPricingSettings() {
       homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
       defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
       managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+      techniquePrices: { ...DEFAULT_TECHNIQUE_PRICES },
       planTiers: DEFAULT_PLAN_TIERS,
       planMilestones: DEFAULT_PLAN_MILESTONES,
     },
@@ -431,6 +463,23 @@ export function normalizePricingPatch(body) {
     } else out.managerCommissionPerSessionRupees = Math.round(n * 100) / 100;
   }
 
+  if (body?.techniquePrices !== undefined) {
+    if (typeof body.techniquePrices !== 'object' || body.techniquePrices === null || Array.isArray(body.techniquePrices)) {
+      errors.push('techniquePrices must be an object');
+    } else {
+      const prices = {};
+      for (const issue of TECHNIQUE_ISSUES) {
+        const n = Number(body.techniquePrices[issue]);
+        if (!Number.isFinite(n) || n <= 0 || n > PRICING_MONEY_MAX) {
+          errors.push(`${issue} price must be between 1 and 50000`);
+        } else {
+          prices[issue] = Math.round(n * 100) / 100;
+        }
+      }
+      if (errors.length === 0) out.techniquePrices = prices;
+    }
+  }
+
   const maxDisc = out.homePlanMaxDiscountPercent ?? getHomePlanMaxDiscountPercentSync();
 
   if (body?.planTiers !== undefined) {
@@ -492,7 +541,8 @@ export async function applyPricingPatch(patch) {
     patch.distanceSurchargePerKmRupees != null ||
     patch.homePlanMaxDiscountPercent != null ||
     patch.defaultPhysioPricePerSession != null ||
-    patch.managerCommissionPerSessionRupees != null
+    patch.managerCommissionPerSessionRupees != null ||
+    patch.techniquePrices != null
   ) {
     $set.pricingUpdatedAt = now;
   }
@@ -517,6 +567,7 @@ export async function resetPricingToDefaults() {
         homePlanMaxDiscountPercent: null,
         defaultPhysioPricePerSession: null,
         managerCommissionPerSessionRupees: null,
+        techniquePrices: undefined,
         planTiers: undefined,
         planMilestones: undefined,
         pricingUpdatedAt: null,

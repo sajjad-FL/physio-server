@@ -14,6 +14,7 @@ import {
   listZonePhysios,
   getManagerWallet,
   listManagerWalletTransactions,
+  managerSuggestTechnique,
 } from '../controllers/managerController.js';
 import {
   createManagerWithdrawRequest,
@@ -35,6 +36,7 @@ router.patch('/bookings/:id/assessment', ...managerChain, recordAssessment);
 router.patch('/bookings/:id/create-plan', ...managerChain, managerCreatePlan);
 router.patch('/bookings/:id/assign-physio', ...managerChain, managerAssignPhysio);
 router.post('/bookings/:id/collections', ...managerChain, managerRecordCollection);
+router.post('/bookings/:id/suggest-technique', ...managerChain, managerSuggestTechnique);
 router.patch('/bookings/:id/reschedule', ...managerChain, rescheduleBooking);
 router.delete('/bookings/:id/sessions/:sessionId', ...managerChain, deleteAdminBookingSession);
 router.get('/ledger', ...managerChain, listManagerLedger);

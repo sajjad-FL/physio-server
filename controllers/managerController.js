@@ -10,12 +10,30 @@ import WithdrawRequest from '../models/WithdrawRequest.js';
 import { computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
 import { previewDistribution } from '../services/managerSettlement.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
-import { computeDistanceSurcharge, getManagerCommissionPerSessionSync } from '../utils/pricingConfig.js';
+import {
+  computeDistanceSurcharge,
+  getManagerCommissionPerSessionSync,
+  getTechniquePriceSync,
+  isTechniqueIssue,
+} from '../utils/pricingConfig.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
 import { isPlanLive, isAwaitingPatientConsent } from '../utils/planStatus.js';
+import {
+  formatAssessmentNotesText,
+  sanitizeAssessmentData,
+  validateAssessmentData,
+} from '../utils/formatAssessmentNotes.js';
 import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
+import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
+import { computeMarketplaceSplit } from '../utils/marketplacePayment.js';
+import {
+  getBookablePhysioCount,
+  countActivePrimaryBookingsForSlot,
+} from '../utils/slotCapacity.js';
+import { allocateBookingCode } from '../utils/bookingCode.js';
+import { normalizePincode } from '../utils/pincode.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -199,13 +217,29 @@ export async function recordAssessment(req, res, next) {
   try {
     const managerId = req.user?.id;
     const { id } = req.params;
-    const notes = String(req.body?.assessmentNotes || req.body?.notes || '').trim().slice(0, 5000);
 
     const loaded = await loadManagerBooking(id, managerId);
     if (loaded.error) return res.status(loaded.error.status).json({ message: loaded.error.message });
     const booking = loaded.booking;
 
-    booking.assessmentNotes = notes;
+    if (booking.carePath === 'technique_managed') {
+      return res.status(400).json({
+        message: 'Assessment is not required for technique bookings — assign a physiotherapist instead',
+      });
+    }
+
+    const hasStructured = req.body?.assessmentData != null && typeof req.body.assessmentData === 'object';
+    if (hasStructured) {
+      const assessmentData = sanitizeAssessmentData(req.body.assessmentData);
+      const errMsg = validateAssessmentData(assessmentData);
+      if (errMsg) return res.status(400).json({ message: errMsg });
+      booking.assessmentData = assessmentData;
+      booking.assessmentNotes = formatAssessmentNotesText(assessmentData);
+    } else {
+      const notes = String(req.body?.assessmentNotes || req.body?.notes || '').trim().slice(0, 5000);
+      booking.assessmentNotes = notes;
+    }
+
     booking.assessmentCompletedAt = new Date();
     if (booking.workflowStatus === 'manager_assigned' || !booking.workflowStatus) {
       booking.workflowStatus = 'assessment_done';
@@ -227,6 +261,12 @@ export async function managerCreatePlan(req, res, next) {
     const loaded = await loadManagerBooking(id, managerId);
     if (loaded.error) return res.status(loaded.error.status).json({ message: loaded.error.message });
     const booking = loaded.booking;
+
+    if (booking.carePath === 'technique_managed') {
+      return res.status(400).json({
+        message: 'Care plans are not used for technique bookings — assign a physiotherapist instead',
+      });
+    }
 
     if (booking.serviceType !== 'home') {
       return res.status(400).json({ message: 'Plan can be created only for home service' });
@@ -733,6 +773,197 @@ export async function listZonePhysios(req, res, next) {
       .lean();
 
     return res.json({ physios });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Manager creates a technique booking (cupping, dry needling, etc.) for the
+ * patient on an existing managed case. Always technique_managed under this manager.
+ * Multi-session: one booking with a visit schedule; manager may send explicit dates[].
+ */
+function addDaysYmd(ymd, days) {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+export async function managerSuggestTechnique(req, res, next) {
+  try {
+    const managerId = req.user?.id;
+    const { id } = req.params;
+    const { issue, timeSlot } = req.body || {};
+
+    const loaded = await loadManagerBooking(id, managerId);
+    if (loaded.error) return res.status(loaded.error.status).json({ message: loaded.error.message });
+    const source = loaded.booking;
+
+    if (source.serviceType !== 'home') {
+      return res.status(400).json({ message: 'Technique bookings are only for home-care patients' });
+    }
+    if (!source.userId) {
+      return res.status(400).json({ message: 'This case has no patient' });
+    }
+
+    const techniqueIssue = String(issue || '').trim();
+    if (!isTechniqueIssue(techniqueIssue)) {
+      return res.status(400).json({
+        message: 'Choose Cupping Therapy, Dry Needling, Kinesio Taping, or IASTM',
+      });
+    }
+
+    const normalizedTimeSlot = String(timeSlot || '').trim();
+    if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'timeSlot is not available' });
+    }
+
+    let sessions = Number(req.body?.sessions);
+    if (!Number.isFinite(sessions)) sessions = 1;
+    sessions = Math.round(sessions);
+    if (!Number.isInteger(sessions) || sessions < 1 || sessions > 15) {
+      return res.status(400).json({ message: 'sessions must be an integer between 1 and 15' });
+    }
+
+    const todayYmd = todayYMDLocal();
+    const ymdRe = /^\d{4}-\d{2}-\d{2}$/;
+    let visitDates = [];
+    if (Array.isArray(req.body?.dates) && req.body.dates.length > 0) {
+      if (req.body.dates.length !== sessions) {
+        return res.status(400).json({ message: 'dates must match the number of sessions' });
+      }
+      for (const raw of req.body.dates) {
+        const d = String(raw || '').trim();
+        if (!ymdRe.test(d)) {
+          return res.status(400).json({ message: 'Each visit date must be YYYY-MM-DD' });
+        }
+        if (d < todayYmd) {
+          return res.status(400).json({ message: 'Visit dates must be today or in the future' });
+        }
+        visitDates.push(d);
+      }
+    } else {
+      // Back-compat: single `date` + consecutive days
+      const date = String(req.body?.date || '').trim();
+      if (!ymdRe.test(date)) {
+        return res.status(400).json({ message: 'Provide dates[] for each session, or a starting date' });
+      }
+      if (date < todayYmd) {
+        return res.status(400).json({ message: 'Date must be today or in the future' });
+      }
+      visitDates = Array.from({ length: sessions }, (_, i) => addDaysYmd(date, i));
+    }
+
+    const firstDate = visitDates[0];
+    if (firstDate === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'This time slot is no longer available' });
+    }
+    if (firstDate === todayYmd && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+    }
+
+    const platformCapacity = await getBookablePhysioCount();
+    if (platformCapacity < 1) {
+      return res.status(503).json({
+        message: 'No verified physiotherapists are available to take new bookings right now',
+      });
+    }
+    const alreadyBooked = await countActivePrimaryBookingsForSlot(firstDate, normalizedTimeSlot);
+    if (alreadyBooked >= platformCapacity) {
+      return res.status(409).json({
+        message: 'This time slot is fully booked on the first visit date. Please choose another slot or date.',
+      });
+    }
+
+    const patient = await User.findById(source.userId).select('name location pincode coordinates').lean();
+    if (!patient) {
+      return res.status(400).json({ message: 'Patient account not found' });
+    }
+    const location = String(patient.location || '').trim();
+    if (!location) {
+      return res.status(400).json({
+        message: 'Patient needs a saved home address before you can book a technique visit',
+      });
+    }
+
+    const price = getTechniquePriceSync(techniqueIssue);
+    const totalAmount = Math.round((price * sessions + Number.EPSILON) * 100) / 100;
+    const split = computeMarketplaceSplit(totalAmount, sessions);
+    const pincode =
+      normalizePincode(source.pincode) ||
+      normalizePincode(patient.pincode) ||
+      normalizePincode(location);
+
+    const schedule = visitDates.map((d) => ({
+      date: d,
+      time: normalizedTimeSlot,
+      status: 'scheduled',
+    }));
+
+    let booking;
+    try {
+      const { bookingSeq, bookingCode } = await allocateBookingCode();
+      booking = new Booking({
+        userId: source.userId,
+        physioId: null,
+        issue: techniqueIssue,
+        date: firstDate,
+        timeSlot: normalizedTimeSlot,
+        status: 'pending',
+        paymentStatus: 'pending',
+        serviceType: 'home',
+        consentAccepted: true,
+        sessions,
+        schedule,
+        amountPerSession: price,
+        totalAmount,
+        amountPaise: Math.round(totalAmount * 100),
+        bookingSeq,
+        bookingCode,
+        payment: {
+          mode: 'offline',
+          status: 'pending',
+          amount: split.amount,
+          commission: split.commission,
+          physioEarning: split.physioEarning,
+        },
+        carePath: 'technique_managed',
+        managerId,
+        zoneId: source.zoneId || null,
+        pincode: pincode || null,
+        managerAssignedAt: new Date(),
+        planStatus: 'live',
+        planLiveAt: new Date(),
+        workflowStatus: 'plan_live',
+        managerCommissionPerSession: getManagerCommissionPerSessionSync(),
+        homePlanPaymentMode: 'offline',
+        homePlanBillingType: 'full',
+      });
+      await booking.save();
+    } catch (e) {
+      if (e?.code === 11000) {
+        return res.status(409).json({
+          message:
+            'Could not save this booking (database conflict). Try another date/slot, or restart the API.',
+        });
+      }
+      throw e;
+    }
+
+    fireBookingPush(async () => {
+      const sessionPart =
+        sessions > 1 ? `${sessions} sessions starting ${firstDate}` : `for ${firstDate}`;
+      await notifyExpoUsers([booking.userId], {
+        title: 'Technique session booked',
+        body: `Your care manager booked ${techniqueIssue} (${sessionPart}). They will assign a physiotherapist.`,
+        data: { kind: 'technique_managed', bookingId: String(booking._id) },
+      });
+    });
+
+    const out = await populateBooking(Booking.findById(booking._id));
+    const { payments, paymentSummary } = await attachPaymentsAndSummary(out);
+    return res.status(201).json({ ...out, payments, paymentSummary });
   } catch (err) {
     next(err);
   }

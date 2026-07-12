@@ -12,6 +12,17 @@ export const DEFAULT_PHYSIO_PRICE_PER_SESSION = 500;
 /** Flat care-manager commission per session (INR). 0 = manager commission disabled. */
 export const DEFAULT_MANAGER_COMMISSION_PER_SESSION = 0;
 
+/** Technique issues that use direct home booking (no care manager). */
+export const TECHNIQUE_ISSUES = ['Cupping Therapy', 'Dry Needling', 'Kinesio Taping', 'IASTM'];
+
+/** Default session prices (INR) for technique-direct home bookings. */
+export const DEFAULT_TECHNIQUE_PRICES = {
+  'Cupping Therapy': 800,
+  'Dry Needling': 1000,
+  'Kinesio Taping': 700,
+  IASTM: 900,
+};
+
 export const ALLOWED_PLAN_SESSION_COUNTS = [7, 15, 30];
 
 export const DEFAULT_PLAN_TIERS = [

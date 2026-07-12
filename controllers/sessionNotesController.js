@@ -1,20 +1,60 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
+import {
+  formatSessionProgressText,
+  sanitizeSessionProgress,
+  validateSessionProgress,
+} from '../utils/formatAssessmentNotes.js';
 
 function formatNotesPayload(notes) {
-  if (!notes) return { text: '', createdAt: null, updatedAt: null };
+  if (!notes) {
+    return {
+      text: '',
+      painNow: null,
+      functionNow: null,
+      painOnMovement: null,
+      sleep: null,
+      mobility: null,
+      vsLastVisit: null,
+      homeExercises: null,
+      painMeds: null,
+      createdAt: null,
+      updatedAt: null,
+    };
+  }
   return {
     text: notes.text || '',
+    painNow: notes.painNow ?? null,
+    functionNow: notes.functionNow ?? null,
+    painOnMovement: notes.painOnMovement ?? null,
+    sleep: notes.sleep || null,
+    mobility: notes.mobility || null,
+    vsLastVisit: notes.vsLastVisit || null,
+    homeExercises: notes.homeExercises || null,
+    painMeds: notes.painMeds || null,
     createdAt: notes.createdAt || null,
     updatedAt: notes.updatedAt || null,
   };
 }
 
+function applyProgressToNotesDoc(doc, progress, now) {
+  const summary = formatSessionProgressText(progress);
+  doc.text = summary || progress.text || '';
+  doc.painNow = progress.painNow;
+  doc.functionNow = progress.functionNow;
+  doc.painOnMovement = progress.painOnMovement;
+  doc.sleep = progress.sleep;
+  doc.mobility = progress.mobility;
+  doc.vsLastVisit = progress.vsLastVisit;
+  doc.homeExercises = progress.homeExercises;
+  doc.painMeds = progress.painMeds;
+  if (!doc.createdAt) doc.createdAt = now;
+  doc.updatedAt = now;
+}
+
 export async function patchSessionNotes(req, res, next) {
   try {
     const { sessionId } = req.params;
-    const raw = req.body?.text;
-    const text = typeof raw === 'string' ? raw.trim() : '';
 
     if (!mongoose.isValidObjectId(sessionId)) {
       return res.status(400).json({ message: 'Invalid session id' });
@@ -27,6 +67,12 @@ export async function patchSessionNotes(req, res, next) {
     const physioId = req.physio?.id;
     if (!physioId) {
       return res.status(403).json({ message: 'Only physiotherapists can edit session notes' });
+    }
+
+    const progress = sanitizeSessionProgress(req.body || {});
+    const validationError = validateSessionProgress(progress);
+    if (validationError) {
+      return res.status(400).json({ message: validationError });
     }
 
     let booking = await Booking.findOne({ 'schedule._id': sessionId });
@@ -55,22 +101,15 @@ export async function patchSessionNotes(req, res, next) {
 
     if (usePrimary) {
       if (!booking.primarySessionNotes) booking.primarySessionNotes = {};
-      booking.primarySessionNotes.text = text;
-      if (!booking.primarySessionNotes.createdAt) {
-        booking.primarySessionNotes.createdAt = now;
-      }
-      booking.primarySessionNotes.updatedAt = now;
+      applyProgressToNotesDoc(booking.primarySessionNotes, progress, now);
+      booking.markModified('primarySessionNotes');
     } else {
       const sub = booking.schedule.id(sessionId);
       if (!sub) {
         return res.status(404).json({ message: 'Session not found' });
       }
       if (!sub.notes) sub.notes = {};
-      sub.notes.text = text;
-      if (!sub.notes.createdAt) {
-        sub.notes.createdAt = now;
-      }
-      sub.notes.updatedAt = now;
+      applyProgressToNotesDoc(sub.notes, progress, now);
     }
 
     await booking.save();

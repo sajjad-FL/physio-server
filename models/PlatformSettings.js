@@ -44,6 +44,11 @@ const platformSettingsSchema = new mongoose.Schema(
     defaultPhysioPricePerSession: { type: Number, min: 0, default: null },
     /** Flat care-manager commission per session (INR). Null → default (0 = disabled). */
     managerCommissionPerSessionRupees: { type: Number, min: 0, default: null },
+    /**
+     * Per-technique session prices (INR), keyed by issue name.
+     * e.g. { "Cupping Therapy": 800, "Dry Needling": 1000, "Kinesio Taping": 700, "IASTM": 900 }
+     */
+    techniquePrices: { type: mongoose.Schema.Types.Mixed, default: undefined },
     pricingUpdatedAt: { type: Date, default: null },
 
     planTiers: { type: [planTierSchema], default: undefined },

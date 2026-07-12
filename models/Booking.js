@@ -57,6 +57,7 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       enum: [
         'pending_manager_assignment',
+        'pending_physio_assignment',
         'manager_assigned',
         'assessment_done',
         'awaiting_patient_consent',
@@ -67,6 +68,17 @@ const bookingSchema = new mongoose.Schema(
         'completed',
       ],
       default: null,
+    },
+    /**
+     * How care is coordinated:
+     * - standard: care-manager home flow
+     * - technique_direct: technique booking, no manager (admin assigns physio)
+     * - technique_managed: technique booking attached to patient's live-care manager
+     */
+    carePath: {
+      type: String,
+      enum: ['standard', 'technique_direct', 'technique_managed'],
+      default: 'standard',
     },
     managerId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -81,6 +93,8 @@ const bookingSchema = new mongoose.Schema(
     pincode: { type: String, trim: true, default: null },
     managerAssignedAt: { type: Date, default: null },
     assessmentNotes: { type: String, trim: true, default: '' },
+    /** Structured baseline from manager assessment (pain, function, areas, etc.). */
+    assessmentData: { type: mongoose.Schema.Types.Mixed, default: null },
     assessmentCompletedAt: { type: Date, default: null },
     planCreatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     planCreatedByRole: {
@@ -106,6 +120,14 @@ const bookingSchema = new mongoose.Schema(
             time: { type: String, required: true, trim: true },
             notes: {
               text: { type: String, default: '' },
+              painNow: { type: Number, min: 0, max: 10, default: null },
+              functionNow: { type: Number, min: 0, max: 10, default: null },
+              painOnMovement: { type: Number, min: 0, max: 10, default: null },
+              sleep: { type: String, trim: true, default: null },
+              mobility: { type: String, trim: true, default: null },
+              vsLastVisit: { type: String, trim: true, default: null },
+              homeExercises: { type: String, trim: true, default: null },
+              painMeds: { type: String, trim: true, default: null },
               createdAt: { type: Date, default: null },
               updatedAt: { type: Date, default: null },
             },
@@ -133,6 +155,14 @@ const bookingSchema = new mongoose.Schema(
     /** When there is no multi-session schedule, notes for the primary visit live here. */
     primarySessionNotes: {
       text: { type: String, default: '' },
+      painNow: { type: Number, min: 0, max: 10, default: null },
+      functionNow: { type: Number, min: 0, max: 10, default: null },
+      painOnMovement: { type: Number, min: 0, max: 10, default: null },
+      sleep: { type: String, trim: true, default: null },
+      mobility: { type: String, trim: true, default: null },
+      vsLastVisit: { type: String, trim: true, default: null },
+      homeExercises: { type: String, trim: true, default: null },
+      painMeds: { type: String, trim: true, default: null },
       createdAt: { type: Date, default: null },
       updatedAt: { type: Date, default: null },
     },
