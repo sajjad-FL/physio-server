@@ -33,6 +33,7 @@ import { isPlanLive, isAwaitingPatientConsent } from '../utils/planStatus.js';
 import { normalizePincode } from '../utils/pincode.js';
 import { applyZoneAndManager } from '../utils/zoneAssign.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
+import { allocateBookingCode } from '../utils/bookingCode.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -209,6 +210,7 @@ export async function createBooking(req, res, next) {
 
     const totalAmount = defaultBookingAmountRupees();
     const split = computeMarketplaceSplit(totalAmount);
+    const { bookingSeq, bookingCode } = await allocateBookingCode();
 
     let booking;
     try {
@@ -225,6 +227,8 @@ export async function createBooking(req, res, next) {
         amountPaise: Math.round(totalAmount * 100),
         totalAmount,
         consentAccepted: true,
+        bookingSeq,
+        bookingCode,
         payment: {
           mode: 'online',
           status: 'pending',
@@ -328,9 +332,16 @@ async function buildAdminBookingSearchFilter(searchRaw) {
   if (!search) return null;
 
   const rx = new RegExp(escapeRegex(search), 'i');
-  const or = [{ issue: rx }, { date: rx }, { timeSlot: rx }];
+  const or = [{ issue: rx }, { date: rx }, { timeSlot: rx }, { bookingCode: rx }];
   if (mongoose.isValidObjectId(search)) {
     or.push({ _id: new mongoose.Types.ObjectId(search) });
+  }
+  const codeMatch = search.match(/^(?:(\d{4})-)?(\d+)$/);
+  if (codeMatch) {
+    const seq = Number(codeMatch[2]);
+    if (Number.isFinite(seq) && seq > 0) {
+      or.push({ bookingSeq: seq });
+    }
   }
 
   const [userIds, physioIds] = await Promise.all([
@@ -752,6 +763,7 @@ export async function requestHomeBooking(req, res, next) {
 
     let booking;
     try {
+      const { bookingSeq, bookingCode } = await allocateBookingCode();
       booking = new Booking({
         userId,
         physioId: null,
@@ -765,6 +777,8 @@ export async function requestHomeBooking(req, res, next) {
         workflowStatus: 'pending_manager_assignment',
         pincode: pincode || null,
         consentAccepted: true,
+        bookingSeq,
+        bookingCode,
       });
       await applyZoneAndManager(booking, { pincode, location: location.trim() });
       await booking.save();

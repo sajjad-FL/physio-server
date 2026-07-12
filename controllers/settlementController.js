@@ -14,7 +14,7 @@ function roundMoney2(n) {
 
 const LEDGER_BOOKING_POPULATE = {
   path: 'bookingId',
-  select: 'issue date timeSlot totalAmount userId',
+  select: 'issue date timeSlot totalAmount userId bookingCode bookingSeq',
   populate: { path: 'userId', select: 'name phone' },
 };
 
@@ -28,6 +28,8 @@ function shapeBookingRef(booking) {
     patientName,
     date: booking.date,
     timeSlot: booking.timeSlot,
+    bookingCode: booking.bookingCode || null,
+    bookingSeq: booking.bookingSeq ?? null,
   };
 }
 

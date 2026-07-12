@@ -576,7 +576,7 @@ export async function listManagerLedger(req, res, next) {
       .sort({ createdAt: -1 })
       .populate({
         path: 'bookingId',
-        select: 'issue date timeSlot totalAmount userId',
+        select: 'issue date timeSlot totalAmount userId bookingCode bookingSeq',
         populate: { path: 'userId', select: 'name phone' },
       })
       .lean();
@@ -592,6 +592,8 @@ export async function listManagerLedger(req, res, next) {
               id: booking._id,
               issue: booking.issue,
               patientName,
+              bookingCode: booking.bookingCode || null,
+              bookingSeq: booking.bookingSeq ?? null,
             }
           : null,
       };
@@ -671,7 +673,7 @@ export async function listManagerWalletTransactions(req, res, next) {
         .limit(limit)
         .populate({
           path: 'bookingId',
-          select: 'issue date timeSlot userId',
+          select: 'issue date timeSlot userId bookingCode bookingSeq',
           populate: { path: 'userId', select: 'name' },
         })
         .lean(),

@@ -9,6 +9,7 @@
     "migrate:phase3": "node scripts/migratePhase3.js",
     "migrate:booking-slot-index": "node scripts/migrateBookingSlotIndex.js",
     "migrate:payments-installments": "node scripts/migratePaymentsInstallments.js",
+    "migrate:booking-codes": "node scripts/migrateBookingCodes.js",
     "cleanup:firebase-admin": "bash scripts/removeFirebaseAdmin.sh",
     "deploy:nginx-upload-fix": "bash scripts/printNginxUploadFix.sh"
   },

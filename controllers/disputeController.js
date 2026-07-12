@@ -81,7 +81,7 @@ export async function raiseDispute(req, res, next) {
       .populate({
         path: 'bookingId',
         select:
-          'date timeSlot issue paymentStatus sessionStatus status userId physioId',
+          'date timeSlot issue paymentStatus sessionStatus status userId physioId bookingCode bookingSeq',
         populate: [
           { path: 'userId', select: 'name phone' },
           { path: 'physioId', select: 'name phone specialization' },
@@ -119,7 +119,7 @@ export async function listMyDisputes(req, res, next) {
       .populate({
         path: 'bookingId',
         select:
-          'date timeSlot issue paymentStatus sessionStatus status userId physioId',
+          'date timeSlot issue paymentStatus sessionStatus status userId physioId bookingCode bookingSeq',
         populate: [
           { path: 'userId', select: 'name phone' },
           { path: 'physioId', select: 'name phone specialization' },

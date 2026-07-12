@@ -19,6 +19,8 @@ function shapeTransactionBookingRef(booking) {
     patientName,
     date: booking.date,
     timeSlot: booking.timeSlot,
+    bookingCode: booking.bookingCode || null,
+    bookingSeq: booking.bookingSeq ?? null,
   };
 }
 
@@ -189,7 +191,7 @@ export async function getPhysioFinanceDetail(req, res, next) {
         .limit(30)
         .populate({
           path: 'bookingId',
-          select: 'issue date timeSlot userId',
+          select: 'issue date timeSlot userId bookingCode bookingSeq',
           populate: { path: 'userId', select: 'name phone' },
         })
         .lean(),

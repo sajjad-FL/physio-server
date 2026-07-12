@@ -25,6 +25,7 @@ import {
 } from '../utils/razorpayClient.js';
 import { applyWalletCredit } from '../utils/walletCheckout.js';
 import { deductWalletForBooking } from '../utils/walletLedger.js';
+import { allocateBookingCode } from '../utils/bookingCode.js';
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'This physiotherapist already has another booking in that time slot';
@@ -240,6 +241,7 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
 
   let booking;
   try {
+    const { bookingSeq, bookingCode } = await allocateBookingCode();
     booking = await Booking.create({
       userId,
       physioId: selectedPhysio._id,
@@ -260,6 +262,8 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
       heldAt: new Date(),
       paidAt: new Date(),
       sessionStatus: 'scheduled',
+      bookingSeq,
+      bookingCode,
       payment: {
         mode: 'online',
         status: 'paid',

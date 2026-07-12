@@ -214,6 +214,11 @@ const bookingSchema = new mongoose.Schema(
     rescheduledAt: { type: Date, default: null },
     previousDate: { type: String, default: null, trim: true },
     previousTimeSlot: { type: String, default: null, trim: true },
+
+    /** Global never-resetting sequence (1, 2, …). */
+    bookingSeq: { type: Number, default: null },
+    /** Human-readable ID: `{year}-{seq}` e.g. `2026-101`. */
+    bookingCode: { type: String, default: null, trim: true },
   },
   { timestamps: true }
 );
@@ -227,6 +232,24 @@ bookingSchema.index(
     partialFilterExpression: { physioId: { $type: 'objectId' } },
     name: 'uniq_physio_slot',
   }
+);
+
+bookingSchema.index(
+  { bookingSeq: 1 },
+  {
+    unique: true,
+    sparse: true,
+    name: 'uniq_booking_seq',
+  },
+);
+
+bookingSchema.index(
+  { bookingCode: 1 },
+  {
+    unique: true,
+    sparse: true,
+    name: 'uniq_booking_code',
+  },
 );
 
 export default mongoose.model('Booking', bookingSchema);

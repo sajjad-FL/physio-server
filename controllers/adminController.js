@@ -135,7 +135,7 @@ export async function listDisputes(req, res, next) {
       .populate({
         path: 'bookingId',
         select:
-          'date timeSlot issue paymentStatus sessionStatus status userId physioId amountPaise',
+          'date timeSlot issue paymentStatus sessionStatus status userId physioId amountPaise bookingCode bookingSeq',
         populate: [
           { path: 'userId', select: 'name phone' },
           { path: 'physioId', select: 'name phone specialization' },
@@ -226,7 +226,7 @@ export async function resolveAdminDispute(req, res, next) {
       .populate({
         path: 'bookingId',
         select:
-          'date timeSlot issue paymentStatus sessionStatus status userId physioId amountPaise',
+          'date timeSlot issue paymentStatus sessionStatus status userId physioId amountPaise bookingCode bookingSeq',
         populate: [
           { path: 'userId', select: 'name phone' },
           { path: 'physioId', select: 'name phone specialization' },
