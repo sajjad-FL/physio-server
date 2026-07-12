@@ -12,8 +12,9 @@ import { previewDistribution } from '../services/managerSettlement.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
 import {
   computeDistanceSurcharge,
+  getEffectiveManagerCommissionPerSessionSync,
   getManagerCommissionPerSessionSync,
-  getTechniquePriceSync,
+  getTechniqueSplitSync,
   isTechniqueIssue,
 } from '../utils/pricingConfig.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
@@ -27,7 +28,6 @@ import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../u
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
-import { computeMarketplaceSplit } from '../utils/marketplacePayment.js';
 import {
   getBookablePhysioCount,
   countActivePrimaryBookingsForSlot,
@@ -384,8 +384,7 @@ export async function managerAssignPhysio(req, res, next) {
 
     // The discounted patient price must cover the physio's flat rate plus the
     // manager commission — otherwise settlement could not pay both.
-    const commissionPerSession =
-      booking.managerCommissionPerSession ?? getManagerCommissionPerSessionSync();
+    const commissionPerSession = getEffectiveManagerCommissionPerSessionSync(booking);
     const physioRate = Number(physio.pricePerSession);
     if (booking.amountPerSession && Number.isFinite(physioRate) && physioRate > 0) {
       const discounted = roundMoney2(
@@ -404,7 +403,8 @@ export async function managerAssignPhysio(req, res, next) {
     booking.physioId = physioId;
     // Lock the flat payout rate at assignment time (payout basis at settlement).
     booking.physioRatePerSession = Number.isFinite(physioRate) && physioRate > 0 ? physioRate : null;
-    if (booking.managerCommissionPerSession == null) {
+    // Technique bookings always use Techniques Care manager ₹; home plans keep snapshot.
+    if (isTechniqueIssue(booking.issue) || booking.managerCommissionPerSession == null) {
       booking.managerCommissionPerSession = commissionPerSession;
     }
     booking.physioAssignedBy = managerId;
@@ -514,8 +514,11 @@ export async function managerRecordCollection(req, res, next) {
     // Proportional commission accrual: this collection's share of the plan's
     // total flat commission (commissionPerSession × sessions). Paid out when
     // the admin settles the cash hand-off; shown as "pending" until then.
-    const commissionPerSession =
-      booking.managerCommissionPerSession ?? getManagerCommissionPerSessionSync();
+    // Technique bookings use Techniques Care manager ₹ (not Defaults ₹/session).
+    const commissionPerSession = getEffectiveManagerCommissionPerSessionSync(booking);
+    if (booking.managerCommissionPerSession !== commissionPerSession) {
+      booking.managerCommissionPerSession = commissionPerSession;
+    }
     const planSessions = Math.max(1, Number(booking.sessions) || booking.schedule?.length || 1);
     const planTotal = Number(booking.totalAmount || 0);
     const managerCommissionAmount =
@@ -616,17 +619,46 @@ export async function listManagerLedger(req, res, next) {
       .sort({ createdAt: -1 })
       .populate({
         path: 'bookingId',
-        select: 'issue date timeSlot totalAmount userId bookingCode bookingSeq',
+        select:
+          'issue carePath date timeSlot totalAmount sessions schedule userId bookingCode bookingSeq managerCommissionPerSession',
         populate: { path: 'userId', select: 'name phone' },
       })
       .lean();
 
+    const commissionFixes = [];
     const shaped = entries.map((e) => {
       const booking = e.bookingId;
       const patientName =
         booking && typeof booking.userId === 'object' ? booking.userId?.name : null;
+
+      let managerCommissionAmount = e.managerCommissionAmount;
+      // Open/batched technique rows may still store Defaults-based cut — show Techniques rate.
+      if (
+        booking &&
+        isTechniqueIssue(booking.issue) &&
+        (e.status === 'open' || e.status === 'batched') &&
+        e.direction === 'credit'
+      ) {
+        const perSession = getEffectiveManagerCommissionPerSessionSync(booking);
+        const planSessions = Math.max(
+          1,
+          Number(booking.sessions) || booking.schedule?.length || 1,
+        );
+        const planTotal = Number(booking.totalAmount || 0);
+        const amount = Number(e.amount || 0);
+        const corrected =
+          planTotal > 0 && perSession > 0
+            ? roundMoney2(amount * ((perSession * planSessions) / planTotal))
+            : 0;
+        if (Number(managerCommissionAmount) !== corrected) {
+          managerCommissionAmount = corrected;
+          commissionFixes.push({ id: e._id, amount: corrected });
+        }
+      }
+
       return {
         ...e,
+        managerCommissionAmount,
         bookingRef: booking
           ? {
               id: booking._id,
@@ -638,6 +670,17 @@ export async function listManagerLedger(req, res, next) {
           : null,
       };
     });
+
+    if (commissionFixes.length) {
+      await ManagerLedgerEntry.bulkWrite(
+        commissionFixes.map((f) => ({
+          updateOne: {
+            filter: { _id: f.id, status: { $in: ['open', 'batched'] } },
+            update: { $set: { managerCommissionAmount: f.amount } },
+          },
+        })),
+      );
+    }
 
     const openTotal = entries
       .filter((e) => e.status === 'open' && e.direction === 'credit')
@@ -814,11 +857,6 @@ export async function managerSuggestTechnique(req, res, next) {
       });
     }
 
-    const normalizedTimeSlot = String(timeSlot || '').trim();
-    if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
-    }
-
     let sessions = Number(req.body?.sessions);
     if (!Number.isFinite(sessions)) sessions = 1;
     sessions = Math.round(sessions);
@@ -855,12 +893,40 @@ export async function managerSuggestTechnique(req, res, next) {
       visitDates = Array.from({ length: sessions }, (_, i) => addDaysYmd(date, i));
     }
 
-    const firstDate = visitDates[0];
-    if (firstDate === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+    // Per-session times (preferred) or one shared timeSlot for all visits
+    let visitTimes = [];
+    if (Array.isArray(req.body?.times) && req.body.times.length > 0) {
+      if (req.body.times.length !== sessions) {
+        return res.status(400).json({ message: 'times must match the number of sessions' });
+      }
+      for (const raw of req.body.times) {
+        const t = String(raw || '').trim();
+        if (!DAILY_SLOTS.includes(t)) {
+          return res.status(400).json({ message: 'Each visit time must be a valid time slot' });
+        }
+        visitTimes.push(t);
+      }
+    } else {
+      const normalizedTimeSlot = String(timeSlot || '').trim();
+      if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
+        return res.status(400).json({ message: 'timeSlot is not available' });
+      }
+      visitTimes = Array.from({ length: sessions }, () => normalizedTimeSlot);
     }
-    if (firstDate === todayYmd && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+
+    for (let i = 0; i < sessions; i++) {
+      const d = visitDates[i];
+      const t = visitTimes[i];
+      if (d === todayYmd && isSlotStartInPastForToday(t)) {
+        return res.status(400).json({
+          message: `Session ${i + 1}: this time slot is no longer available`,
+        });
+      }
+      if (d === todayYmd && isSlotWithin2HoursForToday(t)) {
+        return res.status(400).json({
+          message: `Session ${i + 1}: bookings must be made at least 2 hours in advance`,
+        });
+      }
     }
 
     const platformCapacity = await getBookablePhysioCount();
@@ -869,11 +935,13 @@ export async function managerSuggestTechnique(req, res, next) {
         message: 'No verified physiotherapists are available to take new bookings right now',
       });
     }
-    const alreadyBooked = await countActivePrimaryBookingsForSlot(firstDate, normalizedTimeSlot);
-    if (alreadyBooked >= platformCapacity) {
-      return res.status(409).json({
-        message: 'This time slot is fully booked on the first visit date. Please choose another slot or date.',
-      });
+    for (let i = 0; i < sessions; i++) {
+      const alreadyBooked = await countActivePrimaryBookingsForSlot(visitDates[i], visitTimes[i]);
+      if (alreadyBooked >= platformCapacity) {
+        return res.status(409).json({
+          message: `Session ${i + 1}: that date/time is fully booked. Choose another slot.`,
+        });
+      }
     }
 
     const patient = await User.findById(source.userId).select('name location pincode coordinates').lean();
@@ -887,17 +955,19 @@ export async function managerSuggestTechnique(req, res, next) {
       });
     }
 
-    const price = getTechniquePriceSync(techniqueIssue);
-    const totalAmount = Math.round((price * sessions + Number.EPSILON) * 100) / 100;
-    const split = computeMarketplaceSplit(totalAmount, sessions);
+    const split = getTechniqueSplitSync(techniqueIssue, sessions, { includeManager: true });
+    const price = split.amountPerSession;
+    const totalAmount = split.amount;
     const pincode =
       normalizePincode(source.pincode) ||
       normalizePincode(patient.pincode) ||
       normalizePincode(location);
 
-    const schedule = visitDates.map((d) => ({
+    const firstDate = visitDates[0];
+    const firstTime = visitTimes[0];
+    const schedule = visitDates.map((d, i) => ({
       date: d,
-      time: normalizedTimeSlot,
+      time: visitTimes[i],
       status: 'scheduled',
     }));
 
@@ -909,7 +979,7 @@ export async function managerSuggestTechnique(req, res, next) {
         physioId: null,
         issue: techniqueIssue,
         date: firstDate,
-        timeSlot: normalizedTimeSlot,
+        timeSlot: firstTime,
         status: 'pending',
         paymentStatus: 'pending',
         serviceType: 'home',
@@ -936,7 +1006,7 @@ export async function managerSuggestTechnique(req, res, next) {
         planStatus: 'live',
         planLiveAt: new Date(),
         workflowStatus: 'plan_live',
-        managerCommissionPerSession: getManagerCommissionPerSessionSync(),
+        managerCommissionPerSession: split.managerPerSession,
         homePlanPaymentMode: 'offline',
         homePlanBillingType: 'full',
       });

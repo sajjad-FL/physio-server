@@ -134,16 +134,132 @@ function normalizePlanTiers(raw) {
   });
 }
 
-function normalizeTechniquePrices(raw) {
-  const out = { ...DEFAULT_TECHNIQUE_PRICES };
-  if (!raw || typeof raw !== 'object') return out;
+function roundMoney(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+function readSplitParts(raw) {
+  return {
+    platform: roundMoney(Math.max(0, Number(raw?.platform) || 0)),
+    physio: roundMoney(Math.max(0, Number(raw?.physio) || 0)),
+    manager: roundMoney(Math.max(0, Number(raw?.manager) || 0)),
+  };
+}
+
+function splitSum(parts) {
+  return roundMoney(parts.platform + parts.physio + parts.manager);
+}
+
+/**
+ * Normalize one technique price to:
+ * { totalAmount, withManager: {platform,physio,manager}, withoutManager: {platform,physio,manager:0} }
+ */
+function expandTechniqueEntry(raw, fallbackTotal, defaultPlatform) {
+  // New dual-split shape
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && (raw.withManager || raw.withoutManager)) {
+    let totalAmount = roundMoney(Number(raw.totalAmount) || 0);
+    let withManager = readSplitParts(raw.withManager || raw);
+    let withoutManager = readSplitParts({
+      ...(raw.withoutManager || {}),
+      manager: 0,
+    });
+
+    if (totalAmount <= 0) {
+      totalAmount = splitSum(withManager) || roundMoney(fallbackTotal);
+    }
+    if (splitSum(withManager) !== totalAmount) {
+      // Prefer explicit withManager; if empty, build from total
+      if (splitSum(withManager) <= 0) {
+        const platform = Math.min(totalAmount, Math.max(0, roundMoney(defaultPlatform)));
+        withManager = {
+          platform,
+          physio: roundMoney(Math.max(0, totalAmount - platform)),
+          manager: 0,
+        };
+      } else {
+        totalAmount = splitSum(withManager);
+      }
+    }
+    if (splitSum(withoutManager) !== totalAmount || withoutManager.manager !== 0) {
+      if (splitSum(withoutManager) <= 0 || withoutManager.manager !== 0) {
+        // Default: move manager share into platform
+        withoutManager = {
+          platform: roundMoney(withManager.platform + withManager.manager),
+          physio: withManager.physio,
+          manager: 0,
+        };
+        if (splitSum(withoutManager) !== totalAmount) {
+          withoutManager.physio = roundMoney(Math.max(0, totalAmount - withoutManager.platform));
+          withoutManager.manager = 0;
+        }
+      } else {
+        withoutManager.physio = roundMoney(Math.max(0, totalAmount - withoutManager.platform));
+        withoutManager.manager = 0;
+      }
+    }
+    return { totalAmount, withManager, withoutManager };
+  }
+
+  // Legacy flat { platform, physio, manager }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const withManager = readSplitParts(raw);
+    let totalAmount = roundMoney(Number(raw.totalAmount) || 0);
+    if (totalAmount <= 0) totalAmount = splitSum(withManager);
+    if (totalAmount <= 0) totalAmount = roundMoney(fallbackTotal);
+    if (splitSum(withManager) !== totalAmount) {
+      withManager.physio = roundMoney(Math.max(0, totalAmount - withManager.platform - withManager.manager));
+    }
+    const withoutManager = {
+      platform: roundMoney(withManager.platform + withManager.manager),
+      physio: withManager.physio,
+      manager: 0,
+    };
+    return { totalAmount, withManager, withoutManager };
+  }
+
+  // Legacy number
+  const asNumber = Number(raw);
+  const totalAmount =
+    Number.isFinite(asNumber) && asNumber > 0 && asNumber <= PRICING_MONEY_MAX
+      ? roundMoney(asNumber)
+      : roundMoney(fallbackTotal);
+  const platform = Math.min(totalAmount, Math.max(0, roundMoney(defaultPlatform)));
+  const withManager = {
+    platform,
+    physio: roundMoney(Math.max(0, totalAmount - platform)),
+    manager: 0,
+  };
+  return {
+    totalAmount,
+    withManager,
+    withoutManager: { ...withManager },
+  };
+}
+
+function normalizeTechniquePrices(raw, defaultPlatform) {
+  const out = {};
   for (const issue of TECHNIQUE_ISSUES) {
-    const n = Number(raw[issue]);
-    if (Number.isFinite(n) && n > 0 && n <= PRICING_MONEY_MAX) {
-      out[issue] = Math.round(n * 100) / 100;
+    out[issue] = expandTechniqueEntry(raw?.[issue], DEFAULT_TECHNIQUE_PRICES[issue], defaultPlatform);
+  }
+  return out;
+}
+
+/** Public Book-by-Need price — always patient totalAmount (same with/without manager). */
+function flattenTechniquePrices(prices) {
+  const out = {};
+  for (const issue of TECHNIQUE_ISSUES) {
+    const p = prices?.[issue];
+    if (p && typeof p === 'object') {
+      out[issue] = roundMoney(Number(p.totalAmount) || 0) || DEFAULT_TECHNIQUE_PRICES[issue];
+    } else {
+      out[issue] = Number(p) || DEFAULT_TECHNIQUE_PRICES[issue];
     }
   }
   return out;
+}
+
+function defaultTechniquePriceObjects(defaultPlatform) {
+  return normalizeTechniquePrices(DEFAULT_TECHNIQUE_PRICES, defaultPlatform);
 }
 
 async function buildSnapshot() {
@@ -190,7 +306,10 @@ async function buildSnapshot() {
   );
   const planTiers = normalizePlanTiers(doc?.planTiers);
   const planMilestones = normalizeMilestonesMap(doc?.planMilestones);
-  const techniquePrices = normalizeTechniquePrices(doc?.techniquePrices);
+  const techniquePrices = normalizeTechniquePrices(
+    doc?.techniquePrices,
+    platformCommissionPerSessionRupees,
+  );
   const allowedPlanSessionCounts = [...ALLOWED_PLAN_SESSION_COUNTS];
 
   return {
@@ -228,16 +347,17 @@ export async function getPricingSnapshot() {
 
 function snapshotOrFallback() {
   if (cache) return cache;
+  const platform = envCommissionPerSession(envDefaultBookingAmount());
   return {
     defaultBookingAmountRupees: envDefaultBookingAmount(),
-    platformCommissionPerSessionRupees: envCommissionPerSession(envDefaultBookingAmount()),
+    platformCommissionPerSessionRupees: platform,
     platformCommissionPercent: envCommissionPercent(),
     distanceSurchargeBaseKm: DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
     distanceSurchargePerKmRupees: DEFAULT_DISTANCE_SURCHARGE_PER_KM,
     homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
     defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
     managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
-    techniquePrices: { ...DEFAULT_TECHNIQUE_PRICES },
+    techniquePrices: defaultTechniquePriceObjects(platform),
     allowedPlanSessionCounts: [...ALLOWED_PLAN_SESSION_COUNTS],
     planTiers: DEFAULT_PLAN_TIERS.map((t) => ({ ...t })),
     planMilestones: normalizeMilestonesMap(null),
@@ -246,6 +366,23 @@ function snapshotOrFallback() {
 
 export function getManagerCommissionPerSessionSync() {
   return snapshotOrFallback().managerCommissionPerSessionRupees;
+}
+
+/**
+ * Flat manager commission per session for a booking (INR).
+ * Technique bookings use Techniques with/without-manager Care manager ₹,
+ * not Defaults "Care-manager commission".
+ */
+export function getEffectiveManagerCommissionPerSessionSync(booking) {
+  if (!booking) return getManagerCommissionPerSessionSync();
+  const issue = booking.issue;
+  if (isTechniqueIssue(issue)) {
+    const includeManager = booking.carePath !== 'technique_direct';
+    return getTechniqueSplitSync(issue, 1, { includeManager }).managerPerSession;
+  }
+  const snap = Number(booking.managerCommissionPerSession);
+  if (Number.isFinite(snap) && snap >= 0) return snap;
+  return getManagerCommissionPerSessionSync();
 }
 
 export function getPlatformCommissionPerSessionSync() {
@@ -260,13 +397,47 @@ export function getDefaultBookingAmountRupeesSync() {
   return snapshotOrFallback().defaultBookingAmountRupees;
 }
 
-/** Price for a technique issue (INR). Falls back to default session price if unknown. */
+/** Price for a technique issue (INR) — always patient totalAmount. */
 export function getTechniquePriceSync(issue) {
+  return getTechniqueSplitSync(issue, 1, { includeManager: true }).amountPerSession;
+}
+
+/**
+ * Marketplace split for a technique booking.
+ * Patient total is always the same; includeManager selects which admin-configured split to use.
+ */
+export function getTechniqueSplitSync(issue, sessionCount = 1, { includeManager = true } = {}) {
   const key = String(issue || '').trim();
-  const prices = snapshotOrFallback().techniquePrices || DEFAULT_TECHNIQUE_PRICES;
-  const n = Number(prices[key]);
-  if (Number.isFinite(n) && n > 0) return n;
-  return snapshotOrFallback().defaultBookingAmountRupees;
+  const prices = snapshotOrFallback().techniquePrices || {};
+  let entry = prices[key];
+  if (!entry || typeof entry !== 'object') {
+    entry = expandTechniqueEntry(
+      entry,
+      snapshotOrFallback().defaultBookingAmountRupees,
+      snapshotOrFallback().platformCommissionPerSessionRupees,
+    );
+  } else if (!entry.withManager) {
+    entry = expandTechniqueEntry(
+      entry,
+      DEFAULT_TECHNIQUE_PRICES[key] || snapshotOrFallback().defaultBookingAmountRupees,
+      snapshotOrFallback().platformCommissionPerSessionRupees,
+    );
+  }
+
+  const split = includeManager ? entry.withManager : entry.withoutManager;
+  const platform = roundMoney(Math.max(0, Number(split?.platform) || 0));
+  const physio = roundMoney(Math.max(0, Number(split?.physio) || 0));
+  const manager = includeManager ? roundMoney(Math.max(0, Number(split?.manager) || 0)) : 0;
+  const amountPerSession = roundMoney(Number(entry.totalAmount) || platform + physio + manager);
+  const sessions = Math.max(1, Math.round(Number(sessionCount) || 1));
+  return {
+    amount: roundMoney(amountPerSession * sessions),
+    commission: roundMoney(platform * sessions),
+    physioEarning: roundMoney(physio * sessions),
+    managerPerSession: manager,
+    amountPerSession,
+    sessionCount: sessions,
+  };
 }
 
 export function isTechniqueIssue(issue) {
@@ -347,7 +518,7 @@ export async function getPublicPricingSettings() {
     homePlanMaxDiscountPercent: s.homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession: s.defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees: s.managerCommissionPerSessionRupees,
-    techniquePrices: s.techniquePrices,
+    techniquePrices: flattenTechniquePrices(s.techniquePrices),
     allowedPlanSessionCounts: s.allowedPlanSessionCounts,
     planTiers: s.planTiers,
     planMilestones: s.planMilestones,
@@ -358,18 +529,19 @@ export async function getPublicPricingSettings() {
 
 export async function getAdminPricingSettings() {
   const s = await getPricingSnapshot();
+  const defaultPlatform = envCommissionPerSession(envDefaultBookingAmount());
   return {
     ...s,
     defaults: {
       defaultBookingAmountRupees: envDefaultBookingAmount(),
-      platformCommissionPerSessionRupees: envCommissionPerSession(envDefaultBookingAmount()),
+      platformCommissionPerSessionRupees: defaultPlatform,
       platformCommissionPercent: envCommissionPercent(),
       distanceSurchargeBaseKm: DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
       distanceSurchargePerKmRupees: DEFAULT_DISTANCE_SURCHARGE_PER_KM,
       homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
       defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
       managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
-      techniquePrices: { ...DEFAULT_TECHNIQUE_PRICES },
+      techniquePrices: defaultTechniquePriceObjects(defaultPlatform),
       planTiers: DEFAULT_PLAN_TIERS,
       planMilestones: DEFAULT_PLAN_MILESTONES,
     },
@@ -469,14 +641,46 @@ export function normalizePricingPatch(body) {
     } else {
       const prices = {};
       for (const issue of TECHNIQUE_ISSUES) {
-        const n = Number(body.techniquePrices[issue]);
-        if (!Number.isFinite(n) || n <= 0 || n > PRICING_MONEY_MAX) {
-          errors.push(`${issue} price must be between 1 and 50000`);
-        } else {
-          prices[issue] = Math.round(n * 100) / 100;
+        const raw = body.techniquePrices[issue];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          errors.push(`${issue}: must be an object with totalAmount and splits`);
+          continue;
         }
+
+        const totalAmount = roundMoney(Number(raw.totalAmount) || 0);
+        if (!Number.isFinite(totalAmount) || totalAmount <= 0 || totalAmount > PRICING_MONEY_MAX) {
+          errors.push(`${issue}: totalAmount must be between 1 and 50000`);
+          continue;
+        }
+
+        const withManager = readSplitParts(raw.withManager || raw);
+        const withoutManager = readSplitParts({
+          ...(raw.withoutManager || {}),
+          manager: 0,
+        });
+
+        if (splitSum(withManager) !== totalAmount) {
+          errors.push(
+            `${issue}: with-manager split (platform+physio+manager) must equal totalAmount ₹${totalAmount}`,
+          );
+          continue;
+        }
+        if (withoutManager.manager !== 0) {
+          errors.push(`${issue}: without-manager care manager must be 0`);
+          continue;
+        }
+        if (splitSum(withoutManager) !== totalAmount) {
+          errors.push(
+            `${issue}: without-manager split (platform+physio) must equal totalAmount ₹${totalAmount}`,
+          );
+          continue;
+        }
+
+        prices[issue] = { totalAmount, withManager, withoutManager };
       }
-      if (errors.length === 0) out.techniquePrices = prices;
+      if (Object.keys(prices).length === TECHNIQUE_ISSUES.length) {
+        out.techniquePrices = prices;
+      }
     }
   }
 

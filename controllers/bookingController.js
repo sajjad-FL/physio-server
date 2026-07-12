@@ -28,7 +28,7 @@ import {
   getDefaultBookingAmountRupeesSync,
   getAllowedPlanSessionCountsSync,
   getHomePlanMaxDiscountPercentSync,
-  getTechniquePriceSync,
+  getTechniqueSplitSync,
   isTechniqueIssue,
   getManagerCommissionPerSessionSync,
 } from '../utils/pricingConfig.js';
@@ -880,10 +880,10 @@ export async function requestTechniqueBooking(req, res, next) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    const price = getTechniquePriceSync(techniqueIssue);
-    const split = computeMarketplaceSplit(price, 1);
     const activeCare = await findActiveManagerCare(userId);
     const managed = Boolean(activeCare?.managerId);
+    const split = getTechniqueSplitSync(techniqueIssue, 1, { includeManager: managed });
+    const price = split.amountPerSession;
 
     let booking;
     try {
@@ -924,7 +924,7 @@ export async function requestTechniqueBooking(req, res, next) {
           planStatus: 'live',
           planLiveAt: new Date(),
           workflowStatus: 'plan_live',
-          managerCommissionPerSession: getManagerCommissionPerSessionSync(),
+          managerCommissionPerSession: split.managerPerSession,
           homePlanPaymentMode: 'offline',
           homePlanBillingType: 'full',
         });

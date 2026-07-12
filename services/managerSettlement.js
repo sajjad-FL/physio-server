@@ -1,7 +1,10 @@
 import Booking from '../models/Booking.js';
 import ManagerLedgerEntry from '../models/ManagerLedgerEntry.js';
 import Transaction from '../models/Transaction.js';
-import { getManagerCommissionPerSessionSync } from '../utils/pricingConfig.js';
+import {
+  getEffectiveManagerCommissionPerSessionSync,
+  isTechniqueIssue,
+} from '../utils/pricingConfig.js';
 
 const POSTED = 'posted';
 
@@ -55,12 +58,14 @@ export function computeEntryShares(entry, booking) {
   }
 
   let managerShare;
-  if (entry.managerCommissionAmount != null) {
+  // Technique bookings always take Care manager ₹ from Techniques pricing.
+  // Unsettled ledger rows may still hold the old Defaults-based cut (e.g. ₹30).
+  const recomputeManager =
+    isTechniqueIssue(booking.issue) || entry.managerCommissionAmount == null;
+  if (!recomputeManager) {
     managerShare = roundMoney2(Number(entry.managerCommissionAmount) || 0);
   } else {
-    // Pre-feature entry: recompute from the booking snapshot or current setting.
-    const perSession =
-      booking.managerCommissionPerSession ?? getManagerCommissionPerSessionSync();
+    const perSession = getEffectiveManagerCommissionPerSessionSync(booking);
     managerShare =
       totalAmount > 0 && perSession > 0
         ? roundMoney2(amount * ((perSession * sessions) / totalAmount))
@@ -86,7 +91,9 @@ async function loadBookingsForEntries(entries) {
   ];
   if (!ids.length) return new Map();
   const bookings = await Booking.find({ _id: { $in: ids } })
-    .select('physioId physioRatePerSession managerCommissionPerSession totalAmount sessions schedule payment')
+    .select(
+      'issue carePath physioId physioRatePerSession managerCommissionPerSession totalAmount sessions schedule payment',
+    )
     .lean();
   return new Map(bookings.map((b) => [String(b._id), b]));
 }
@@ -245,6 +252,9 @@ export async function distributeSettlementBatch(batch) {
       distributedAt: new Date(),
       skippedReason: shares.skippedReason || '',
     };
+    if (isTechniqueIssue(booking?.issue)) {
+      entry.managerCommissionAmount = shares.managerShare;
+    }
     await entry.save();
 
     physioPayoutTotal += shares.physioShare;
