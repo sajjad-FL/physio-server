@@ -11,9 +11,18 @@ import {
   postOnlineInstallmentCredit,
   postOfflineInstallmentPair,
 } from '../services/ledger.js';
+import { distributeManagerPhonePePayment } from '../services/managerSettlement.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { isPlanLive } from '../utils/planStatus.js';
+
+function isManagerPhonePePayment(payment) {
+  return (
+    payment?.mode === 'offline' &&
+    payment?.meta?.collectionChannel === 'phonepe_qr' &&
+    Boolean(payment?.meta?.managerId)
+  );
+}
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -166,7 +175,7 @@ export async function adminVerifyPayment(req, res, next) {
     if (payment.status !== 'collected') {
       return res
         .status(400)
-        .json({ message: 'Physio must mark this collection before it can be verified' });
+        .json({ message: 'Collection must be recorded before it can be verified' });
     }
 
     const booking = await Booking.findById(payment.bookingId);
@@ -177,7 +186,11 @@ export async function adminVerifyPayment(req, res, next) {
     payment.rejectReason = '';
     await payment.save();
 
-    await postOfflineInstallmentPair(booking, payment);
+    if (isManagerPhonePePayment(payment)) {
+      await distributeManagerPhonePePayment(booking, payment);
+    } else {
+      await postOfflineInstallmentPair(booking, payment);
+    }
     await recomputeBookingPaymentRollup(booking);
 
     return res.json({ payment: payment.toObject() });
@@ -215,6 +228,12 @@ export async function adminRejectPayment(req, res, next) {
     payment.status = 'rejected';
     payment.rejectReason = reason;
     await payment.save();
+
+    // Free the amount for re-collection (outstanding includes collected only).
+    if (payment.bookingId) {
+      const booking = await Booking.findById(payment.bookingId);
+      if (booking) await recomputeBookingPaymentRollup(booking);
+    }
 
     return res.json({ payment: payment.toObject() });
   } catch (err) {

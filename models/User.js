@@ -76,6 +76,9 @@ const userSchema = new mongoose.Schema(
     },
     /** Platform-funded referral credits (INR) — patients only. */
     walletBalance: { type: Number, default: 0, min: 0 },
+    /** UPI ID for commission / earnings payouts (care managers). */
+    payoutUpiId: { type: String, trim: true, default: '' },
+    payoutDisplayName: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
 );

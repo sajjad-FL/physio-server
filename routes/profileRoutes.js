@@ -5,6 +5,7 @@ import {
   getProfile,
   patchProfile,
   patchAvatar,
+  patchPayoutDetails,
   registerExpoPushToken,
   getWalletSummary,
 } from '../controllers/profileController.js';
@@ -24,6 +25,7 @@ router.get('/', authenticateJwt, getProfile);
 router.get('/wallet-summary', authenticateJwt, getWalletSummary);
 router.post('/expo-push-token', authenticateJwt, registerExpoPushToken);
 router.patch('/avatar', authenticateJwt, avatarUploadMiddleware, patchAvatar);
+router.patch('/payout', authenticateJwt, patchPayoutDetails);
 router.patch('/', authenticateJwt, patchProfile);
 
 export default router;

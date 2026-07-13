@@ -31,6 +31,9 @@ const withdrawRequestSchema = new mongoose.Schema(
     note: { type: String, default: '', trim: true, maxlength: 500 },
     payoutReference: { type: String, default: '', trim: true, maxlength: 120 },
     rejectReason: { type: String, default: '', trim: true, maxlength: 500 },
+    /** Snapshot of payee UPI at request time (admin pays this ID). */
+    payoutUpiId: { type: String, default: '', trim: true, maxlength: 80 },
+    payoutDisplayName: { type: String, default: '', trim: true, maxlength: 120 },
   },
   { timestamps: true }
 );

@@ -17,7 +17,9 @@ export async function getWalletDashboard(req, res, next) {
     const physioId = req.physio.id;
     const oid = new mongoose.Types.ObjectId(physioId);
 
-    const physio = await Physiotherapist.findById(physioId).select('name').lean();
+    const physio = await Physiotherapist.findById(physioId)
+      .select('name payoutUpiId payoutDisplayName')
+      .lean();
     if (!physio) return res.status(404).json({ message: 'Not found' });
 
     const wallet = await getComputedWallet(physioId);
@@ -91,6 +93,8 @@ export async function getWalletDashboard(req, res, next) {
       name: physio.name,
       wallet,
       breakdown,
+      payoutUpiId: physio.payoutUpiId || '',
+      payoutDisplayName: physio.payoutDisplayName || '',
     });
   } catch (err) {
     next(err);

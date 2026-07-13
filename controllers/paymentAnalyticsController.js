@@ -1,13 +1,101 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
+import Payment from '../models/Payment.js';
 import Transaction from '../models/Transaction.js';
 import WithdrawRequest from '../models/WithdrawRequest.js';
+import ManagerLedgerEntry from '../models/ManagerLedgerEntry.js';
 import { roundMoney2, settlePhysioCommissionDue } from '../utils/marketplacePayment.js';
 import {
   computeGlobalPendingCommissionDue,
   listAllPhysioWalletsSummary,
   getComputedWallet,
 } from '../utils/ledgerBalance.js';
+import { resolveWithdrawRequestPayout } from '../utils/payoutUpi.js';
+import { computeEntryShares } from '../services/managerSettlement.js';
+
+/**
+ * Platform fee actually realized:
+ * - manager cash after settlement batch distribute (distribution.platformShare)
+ * - manager PhonePe QR after admin verify (amount − physio − manager)
+ * - online patient payments (commission on earning credits)
+ * - physio remitted offline commission (settlement debits)
+ */
+async function sumPlatformFeeCollected() {
+  const [settledCash, onlineCommission, remitted, phonePePayments] = await Promise.all([
+    ManagerLedgerEntry.aggregate([
+      {
+        $match: {
+          direction: 'credit',
+          'distribution.distributedAt': { $exists: true, $ne: null },
+        },
+      },
+      { $group: { _id: null, sum: { $sum: '$distribution.platformShare' } } },
+    ]),
+    Transaction.aggregate([
+      {
+        $match: {
+          status: 'posted',
+          type: 'online',
+          direction: 'credit',
+          'meta.leg': 'earning',
+          'meta.source': { $nin: ['manager_settlement', 'manager_phonepe_qr'] },
+        },
+      },
+      { $group: { _id: null, sum: { $sum: '$commission' } } },
+    ]),
+    Transaction.aggregate([
+      {
+        $match: {
+          status: 'posted',
+          type: 'settlement',
+          direction: 'debit',
+        },
+      },
+      { $group: { _id: null, sum: { $sum: '$totalAmount' } } },
+    ]),
+    Payment.find({
+      status: 'verified',
+      'meta.collectionChannel': 'phonepe_qr',
+    })
+      .select('amount meta bookingId')
+      .lean(),
+  ]);
+
+  let phonePePlatform = 0;
+  if (phonePePayments.length > 0) {
+    const bookingIds = [
+      ...new Set(
+        phonePePayments
+          .map((p) => p.bookingId)
+          .filter((id) => id && mongoose.isValidObjectId(String(id)))
+          .map((id) => String(id)),
+      ),
+    ];
+    const bookings = bookingIds.length
+      ? await Booking.find({ _id: { $in: bookingIds } }).lean()
+      : [];
+    const byId = new Map(bookings.map((b) => [String(b._id), b]));
+    for (const p of phonePePayments) {
+      const booking = byId.get(String(p.bookingId));
+      const snap = Number(p.meta?.managerCommissionAmount);
+      const shares = computeEntryShares(
+        {
+          amount: p.amount,
+          managerCommissionAmount: Number.isFinite(snap) ? snap : null,
+        },
+        booking,
+      );
+      phonePePlatform += Number(shares.platformShare) || 0;
+    }
+  }
+
+  return roundMoney2(
+    Number(settledCash?.[0]?.sum || 0) +
+      Number(onlineCommission?.[0]?.sum || 0) +
+      Number(remitted?.[0]?.sum || 0) +
+      phonePePlatform,
+  );
+}
 
 function shapeTransactionBookingRef(booking) {
   if (!booking || typeof booking !== 'object') return null;
@@ -33,39 +121,39 @@ function shapeFinanceTransaction(tx) {
 }
 
 /**
- * Admin finance summary tiles: gross revenue, platform commission earned,
- * pending commission dues, and pending payout requests.
+ * Admin finance summary tiles: gross revenue from verified installments,
+ * realized platform fee, pending physio dues, and payouts.
  */
 export async function getPaymentSummary(_req, res, next) {
   try {
-    const [paid, pendingSettlements, pendingPayouts] = await Promise.all([
-      Booking.find({ 'payment.status': { $in: ['paid', 'verified'] } }).select('payment').lean(),
-      computeGlobalPendingCommissionDue(),
-      WithdrawRequest.aggregate([
-        { $match: { status: 'pending' } },
-        { $group: { _id: null, sum: { $sum: '$amount' }, n: { $sum: 1 } } },
-      ]),
-    ]);
+    const [verifiedPayments, totalCommission, pendingSettlements, pendingPayouts, pendingVerification] =
+      await Promise.all([
+        Payment.aggregate([
+          { $match: { status: 'verified' } },
+          { $group: { _id: null, sum: { $sum: '$amount' }, n: { $sum: 1 } } },
+        ]),
+        sumPlatformFeeCollected(),
+        computeGlobalPendingCommissionDue(),
+        WithdrawRequest.aggregate([
+          { $match: { status: 'pending' } },
+          { $group: { _id: null, sum: { $sum: '$amount' }, n: { $sum: 1 } } },
+        ]),
+        Payment.countDocuments({ mode: 'offline', status: 'collected' }),
+      ]);
 
-    let totalRevenue = 0;
-    let totalCommission = 0;
-    for (const b of paid) {
-      const a = b.payment?.amount;
-      const c = b.payment?.commission;
-      if (Number.isFinite(Number(a))) totalRevenue += Number(a);
-      if (Number.isFinite(Number(c))) totalCommission += Number(c);
-    }
-
+    const totalRevenue = roundMoney2(Number(verifiedPayments?.[0]?.sum) || 0);
+    const verifiedPaymentCount = Number(verifiedPayments?.[0]?.n) || 0;
     const payoutsAmount = Number(pendingPayouts?.[0]?.sum || 0);
     const payoutsCount = Number(pendingPayouts?.[0]?.n || 0);
 
     return res.json({
-      totalRevenue: roundMoney2(totalRevenue),
-      totalCommission: roundMoney2(totalCommission),
+      totalRevenue,
+      totalCommission,
       pendingSettlements: roundMoney2(pendingSettlements),
       pendingPayoutsAmount: roundMoney2(payoutsAmount),
       pendingPayoutsCount: payoutsCount,
-      recordedPaymentsCount: paid.length,
+      pendingVerification: Number(pendingVerification) || 0,
+      recordedPaymentsCount: verifiedPaymentCount,
     });
   } catch (err) {
     next(err);
@@ -120,6 +208,9 @@ export async function listPhysiosWalletTable(req, res, next) {
 
     let rows = wallets.map((w) => {
       const pending = pendingByPhysio.get(String(w._id)) || null;
+      const payout = pending
+        ? resolveWithdrawRequestPayout({ ...pending, physioId: w })
+        : { payoutUpiId: '', payoutDisplayName: '' };
       return {
         ...w,
         pendingWithdrawal: pending
@@ -128,6 +219,9 @@ export async function listPhysiosWalletTable(req, res, next) {
               amount: pending.amount,
               requestedAt: pending.requestedAt,
               note: pending.note || '',
+              payoutUpiId: payout.payoutUpiId,
+              payoutDisplayName: payout.payoutDisplayName,
+              payoutReference: pending.payoutReference || '',
             }
           : null,
       };

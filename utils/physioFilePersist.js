@@ -1,4 +1,5 @@
 import { isS3Configured, uploadPhysioAsset } from './s3Upload.js';
+import { ensureCompressedMulterImage } from './compressImageBuffer.js';
 
 /**
  * @param {Express.Multer.File} file
@@ -6,6 +7,7 @@ import { isS3Configured, uploadPhysioAsset } from './s3Upload.js';
  * @param {string} subpath - folder segment under physio/{id}/
  */
 export async function persistPhysioUploadFile(file, physioId, subpath) {
+  await ensureCompressedMulterImage(file, { maxEdge: 2048 });
   if (file.buffer) {
     if (!isS3Configured()) {
       throw new Error('S3 is not configured but upload used memory storage');

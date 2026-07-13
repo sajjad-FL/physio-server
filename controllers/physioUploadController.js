@@ -2,8 +2,10 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
 import { isPhysioOnboardingLocked } from '../utils/physioVerification.js';
 import { isValidIdProofType } from '../constants/idProofTypes.js';
+import { ensureCompressedMulterImage } from '../utils/compressImageBuffer.js';
 
 async function persistFile(file, physioId, subpath) {
+  await ensureCompressedMulterImage(file, { maxEdge: 2048 });
   if (file.buffer) {
     if (!isS3Configured()) {
       throw new Error('S3 is not configured but upload used memory storage');

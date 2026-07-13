@@ -181,7 +181,10 @@ export async function computeGlobalPendingCommissionDue() {
  * Batch summary for admin table (no stored wallet).
  */
 export async function listAllPhysioWalletsSummary() {
-  const physios = await Physiotherapist.find({}).select('name phone specialization').sort({ name: 1 }).lean();
+  const physios = await Physiotherapist.find({})
+    .select('name phone specialization payoutUpiId payoutDisplayName')
+    .sort({ name: 1 })
+    .lean();
   if (physios.length === 0) return [];
 
   const ids = physios.map((p) => p._id);

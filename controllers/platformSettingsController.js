@@ -13,6 +13,7 @@ import {
   normalizeReferralRewardAmountInput,
   normalizeReferralSignupBonusAmountInput,
 } from '../utils/referralConfig.js';
+import { persistPhonePeQrImage } from '../utils/paymentImagePersist.js';
 
 const SINGLETON_ID = 'singleton';
 
@@ -23,6 +24,13 @@ async function ensureSingletonLean() {
     doc = await PlatformSettings.findById(SINGLETON_ID).lean();
   }
   return doc;
+}
+
+function phonePeFields(doc) {
+  return {
+    phonePeQrUrl: doc?.phonePeQrUrl || '',
+    phonePeQrUpdatedAt: doc?.phonePeQrUpdatedAt || null,
+  };
 }
 
 /** Policy payload for physio onboarding / registration UIs. */
@@ -72,6 +80,7 @@ export async function getAdminPlatformSettings(req, res, next) {
       referralRewardAmountUpdatedAt: doc?.referralRewardAmountUpdatedAt || null,
       referralSignupBonusAmount,
       referralSignupBonusAmountUpdatedAt: doc?.referralSignupBonusAmountUpdatedAt || null,
+      ...phonePeFields(doc),
     });
   } catch (err) {
     next(err);
@@ -152,6 +161,65 @@ export async function patchAdminPlatformSettings(req, res, next) {
       referralRewardAmountUpdatedAt: updated?.referralRewardAmountUpdatedAt || null,
       referralSignupBonusAmount: resolvedSignupBonus,
       referralSignupBonusAmountUpdatedAt: updated?.referralSignupBonusAmountUpdatedAt || null,
+      ...phonePeFields(updated),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Admin: upload / replace platform PhonePe QR image. */
+export async function uploadAdminPhonePeQr(req, res, next) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Upload a JPEG, PNG, or WebP PhonePe QR image' });
+    }
+    const url = await persistPhonePeQrImage(req.file);
+    const updated = await PlatformSettings.findByIdAndUpdate(
+      SINGLETON_ID,
+      {
+        $set: {
+          phonePeQrUrl: url,
+          phonePeQrUpdatedAt: new Date(),
+        },
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
+    return res.json({
+      message: 'PhonePe QR saved',
+      ...phonePeFields(updated),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Admin: remove platform PhonePe QR. */
+export async function clearAdminPhonePeQr(req, res, next) {
+  try {
+    const updated = await PlatformSettings.findByIdAndUpdate(
+      SINGLETON_ID,
+      { $set: { phonePeQrUrl: '', phonePeQrUpdatedAt: new Date() } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
+    return res.json({
+      message: 'PhonePe QR removed',
+      ...phonePeFields(updated),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Care manager: fetch platform PhonePe QR for patient collection. */
+export async function getManagerPaymentQr(req, res, next) {
+  try {
+    const doc = await ensureSingletonLean();
+    const url = String(doc?.phonePeQrUrl || '').trim();
+    return res.json({
+      phonePeQrUrl: url,
+      phonePeQrUpdatedAt: doc?.phonePeQrUpdatedAt || null,
+      configured: Boolean(url),
     });
   } catch (err) {
     next(err);

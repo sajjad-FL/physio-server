@@ -1,14 +1,65 @@
 import mongoose from 'mongoose';
 import WithdrawRequest from '../models/WithdrawRequest.js';
 import Transaction from '../models/Transaction.js';
+import User from '../models/User.js';
+import Physiotherapist from '../models/Physiotherapist.js';
 import { getComputedWallet, computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
 import { roundMoney2 } from '../utils/marketplacePayment.js';
+import { resolveWithdrawRequestPayout } from '../utils/payoutUpi.js';
+
+const PAYEE_PROFILE_FIELDS = 'name phone payoutUpiId payoutDisplayName';
+const PHYSIO_PROFILE_FIELDS = 'name phone specialization payoutUpiId payoutDisplayName';
+
+async function enrichWithdrawRow(row, { backfillPending = false } = {}) {
+  const resolved = resolveWithdrawRequestPayout(row);
+  if (
+    backfillPending &&
+    row.status === 'pending' &&
+    !String(row.payoutUpiId || '').trim() &&
+    resolved.payoutUpiId
+  ) {
+    await WithdrawRequest.findByIdAndUpdate(row._id, {
+      $set: {
+        payoutUpiId: resolved.payoutUpiId,
+        payoutDisplayName: resolved.payoutDisplayName,
+      },
+    });
+  }
+  return {
+    ...row,
+    payoutUpiId: resolved.payoutUpiId,
+    payoutDisplayName: resolved.payoutDisplayName,
+  };
+}
+
+async function resolvePayoutForRequest(reqDoc) {
+  const resolved = resolveWithdrawRequestPayout(reqDoc);
+  if (resolved.payoutUpiId) return resolved;
+
+  if (reqDoc.managerId) {
+    const manager = await User.findById(reqDoc.managerId)
+      .select('payoutUpiId payoutDisplayName name')
+      .lean();
+    return resolveWithdrawRequestPayout({ managerId: manager });
+  }
+  if (reqDoc.physioId) {
+    const physio = await Physiotherapist.findById(reqDoc.physioId)
+      .select('payoutUpiId payoutDisplayName name')
+      .lean();
+    return resolveWithdrawRequestPayout({ physioId: physio });
+  }
+  return { payoutUpiId: '', payoutDisplayName: '' };
+}
 
 function parseAmount(body) {
   const raw = body?.amount ?? body?.amountRupees;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return null;
   return roundMoney2(n);
+}
+
+function formatInr(n) {
+  return `₹${roundMoney2(Number(n) || 0)}`;
 }
 
 export async function getPendingWithdraw(req, res, next) {
@@ -37,6 +88,18 @@ export async function createWithdrawRequest(req, res, next) {
       return res.status(400).json({ message: 'You already have a pending withdrawal request' });
     }
 
+    const physio = await Physiotherapist.findById(physioId)
+      .select('payoutUpiId payoutDisplayName name')
+      .lean();
+    const payoutUpiId = String(physio?.payoutUpiId || '').trim();
+    if (!payoutUpiId) {
+      return res.status(400).json({
+        message: 'Add your UPI ID on the Wallet page before requesting a withdrawal',
+      });
+    }
+    const payoutDisplayName =
+      String(physio?.payoutDisplayName || '').trim() || String(physio?.name || '').trim();
+
     const wallet = await getComputedWallet(physioId);
     if (amount > wallet.availableBalance + 1e-6) {
       const hint =
@@ -53,16 +116,14 @@ export async function createWithdrawRequest(req, res, next) {
       amount,
       status: 'pending',
       requestedAt: new Date(),
+      payoutUpiId,
+      payoutDisplayName,
     });
 
     return res.status(201).json(doc.toObject());
   } catch (err) {
     next(err);
   }
-}
-
-function formatInr(n) {
-  return `₹${roundMoney2(Number(n) || 0)}`;
 }
 
 /** Care-manager mirror of getPendingWithdraw (manager auth chain sets req.user). */
@@ -93,6 +154,16 @@ export async function createManagerWithdrawRequest(req, res, next) {
       return res.status(400).json({ message: 'You already have a pending withdrawal request' });
     }
 
+    const manager = await User.findById(managerId).select('payoutUpiId payoutDisplayName name').lean();
+    const payoutUpiId = String(manager?.payoutUpiId || '').trim();
+    if (!payoutUpiId) {
+      return res.status(400).json({
+        message: 'Add your UPI ID on the Finance page before requesting a withdrawal',
+      });
+    }
+    const payoutDisplayName =
+      String(manager?.payoutDisplayName || '').trim() || String(manager?.name || '').trim();
+
     const balance = await computeManagerCommissionBalance(managerId);
     if (amount > balance.availableBalance + 1e-6) {
       return res.status(400).json({
@@ -105,6 +176,8 @@ export async function createManagerWithdrawRequest(req, res, next) {
       amount,
       status: 'pending',
       requestedAt: new Date(),
+      payoutUpiId,
+      payoutDisplayName,
     });
 
     return res.status(201).json(doc.toObject());
@@ -121,13 +194,14 @@ export async function listWithdrawRequests(req, res, next) {
     else if (payee === 'physio') filter.physioId = { $ne: null };
 
     const list = await WithdrawRequest.find(filter)
-      .populate('physioId', 'name phone specialization')
-      .populate('managerId', 'name phone')
+      .populate('physioId', PHYSIO_PROFILE_FIELDS)
+      .populate('managerId', PAYEE_PROFILE_FIELDS)
       .sort({ requestedAt: -1 })
       .lean()
       .limit(200);
 
-    return res.json(list);
+    const enriched = await Promise.all(list.map((row) => enrichWithdrawRow(row, { backfillPending: true })));
+    return res.json(enriched);
   } catch (err) {
     next(err);
   }
@@ -185,15 +259,28 @@ export async function updateWithdrawStatus(req, res, next) {
       }
     }
 
+    const payout = await resolvePayoutForRequest(reqDoc);
+    const approveUpdate = {
+      status: 'approved',
+      processedAt: new Date(),
+      payoutReference,
+    };
+    if (payout.payoutUpiId && !String(reqDoc.payoutUpiId || '').trim()) {
+      approveUpdate.payoutUpiId = payout.payoutUpiId;
+      approveUpdate.payoutDisplayName = payout.payoutDisplayName;
+    }
+
     const claimed = await WithdrawRequest.findOneAndUpdate(
       { _id: id, status: 'pending' },
-      { $set: { status: 'approved', processedAt: new Date(), payoutReference } },
+      { $set: approveUpdate },
       { new: true }
     ).lean();
 
     if (!claimed) {
       return res.status(400).json({ message: 'Request is no longer pending' });
     }
+
+    const payoutUpiId = String(claimed.payoutUpiId || payout.payoutUpiId || '').trim();
 
     try {
       await Transaction.create(
@@ -212,6 +299,7 @@ export async function updateWithdrawStatus(req, res, next) {
                 withdrawRequestId: String(reqDoc._id),
                 note: note || 'Manager commission payout',
                 payoutReference,
+                payoutUpiId,
               },
             }
           : {
@@ -227,6 +315,7 @@ export async function updateWithdrawStatus(req, res, next) {
                 withdrawRequestId: String(reqDoc._id),
                 note: note || 'Withdrawal payout',
                 payoutReference,
+                payoutUpiId,
               },
             }
       );

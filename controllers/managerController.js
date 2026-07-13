@@ -25,8 +25,10 @@ import {
   validateAssessmentData,
 } from '../utils/formatAssessmentNotes.js';
 import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
+import { persistPaymentProofImage } from '../utils/paymentImagePersist.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
+import PlatformSettings from '../models/PlatformSettings.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import {
   getBookablePhysioCount,
@@ -464,9 +466,16 @@ export async function managerRecordCollection(req, res, next) {
     const { id } = req.params;
     const amount = roundMoney2(Number(req.body?.amount));
     const note = String(req.body?.note || '').trim().slice(0, 500);
+    const collectionChannel = String(req.body?.collectionChannel || 'cash')
+      .trim()
+      .toLowerCase();
+    const isPhonePe = collectionChannel === 'phonepe_qr';
 
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ message: 'amount must be a positive number' });
+    }
+    if (collectionChannel !== 'cash' && collectionChannel !== 'phonepe_qr') {
+      return res.status(400).json({ message: 'collectionChannel must be cash or phonepe_qr' });
     }
 
     const loaded = await loadManagerBooking(id, managerId);
@@ -485,6 +494,20 @@ export async function managerRecordCollection(req, res, next) {
       return res.status(400).json({ message: `Cannot record more than the pending payment of Rs.${outstanding.toFixed(2)}` });
     }
 
+    let proofUrl = '';
+    if (isPhonePe) {
+      if (!req.file) {
+        return res.status(400).json({ message: 'Payment screenshot is required for PhonePe QR collections' });
+      }
+      const platform = await PlatformSettings.findById('singleton').select('phonePeQrUrl').lean();
+      if (!String(platform?.phonePeQrUrl || '').trim()) {
+        return res.status(400).json({
+          message: 'PhonePe QR is not configured. Ask admin to upload it under Platform settings.',
+        });
+      }
+      proofUrl = await persistPaymentProofImage(req.file, String(booking._id));
+    }
+
     let sessionId = null;
     if (req.body?.sessionId != null && req.body?.sessionId !== '') {
       const sessionResolved = resolveSessionId(req.body.sessionId, booking);
@@ -496,24 +519,6 @@ export async function managerRecordCollection(req, res, next) {
       sessionId = await defaultSessionIdForCollection(booking);
     }
 
-    const paymentPayload = {
-      bookingId: booking._id,
-      sessionId,
-      physioId: booking.physioId,
-      userId: booking.userId,
-      amount,
-      mode: 'offline',
-      status: 'verified',
-      collectedBy: null,
-      collectedAt: new Date(),
-      verifiedAt: new Date(),
-      note,
-      meta: { managerId, recordedByUserId: managerId },
-    };
-
-    // Proportional commission accrual: this collection's share of the plan's
-    // total flat commission (commissionPerSession × sessions). Paid out when
-    // the admin settles the cash hand-off; shown as "pending" until then.
     // Technique bookings use Techniques Care manager ₹ (not Defaults ₹/session).
     const commissionPerSession = getEffectiveManagerCommissionPerSessionSync(booking);
     if (booking.managerCommissionPerSession !== commissionPerSession) {
@@ -526,36 +531,68 @@ export async function managerRecordCollection(req, res, next) {
         ? roundMoney2(amount * ((commissionPerSession * planSessions) / planTotal))
         : 0;
 
+    const paymentPayload = {
+      bookingId: booking._id,
+      sessionId,
+      physioId: booking.physioId,
+      userId: booking.userId,
+      amount,
+      mode: 'offline',
+      status: isPhonePe ? 'collected' : 'verified',
+      collectedBy: null,
+      collectedAt: new Date(),
+      verifiedAt: isPhonePe ? null : new Date(),
+      note,
+      proofUrl: proofUrl || '',
+      meta: {
+        managerId: String(managerId),
+        recordedByUserId: String(managerId),
+        collectionChannel: isPhonePe ? 'phonepe_qr' : 'cash',
+        ...(isPhonePe ? { managerCommissionAmount } : {}),
+      },
+    };
+
     booking.paymentCollectedBy = managerId;
-    booking.paymentCollectionStatus = amount >= outstanding - 0.009 ? 'recorded' : 'partial';
     booking.workflowStatus = 'payment_recorded';
-    if (amount >= outstanding - 0.009) {
-      booking.paymentStatus = 'held';
-      booking.paidAt = booking.paidAt || new Date();
-      booking.payment = {
-        ...(booking.payment?.toObject?.() || booking.payment || {}),
-        mode: 'offline',
-        status: 'verified',
-        amount: Number(booking.totalAmount || amount),
-      };
+    if (isPhonePe) {
+      // Pending admin confirm — do not treat as fully paid yet.
+      booking.paymentCollectionStatus =
+        amount >= outstanding - 0.009 ? 'recorded' : 'partial';
+      if (!booking.payment) booking.payment = {};
+      booking.payment.mode = 'offline';
+      booking.payment.status = 'collected';
+    } else {
+      booking.paymentCollectionStatus = amount >= outstanding - 0.009 ? 'recorded' : 'partial';
+      if (amount >= outstanding - 0.009) {
+        booking.paymentStatus = 'held';
+        booking.paidAt = booking.paidAt || new Date();
+        booking.payment = {
+          ...(booking.payment?.toObject?.() || booking.payment || {}),
+          mode: 'offline',
+          status: 'verified',
+          amount: Number(booking.totalAmount || amount),
+        };
+      }
     }
 
     let payment;
-    let ledger;
+    let ledger = null;
 
     async function persistCollection(session) {
       if (session) {
         [payment] = await Payment.create([paymentPayload], { session });
-        ledger = await createLedgerForCollection({
-          managerId,
-          bookingId: booking._id,
-          paymentId: payment._id,
-          amount,
-          managerCommissionAmount,
-          recordedBy: managerId,
-          note,
-          session,
-        });
+        if (!isPhonePe) {
+          ledger = await createLedgerForCollection({
+            managerId,
+            bookingId: booking._id,
+            paymentId: payment._id,
+            amount,
+            managerCommissionAmount,
+            recordedBy: managerId,
+            note,
+            session,
+          });
+        }
         await booking.save({ session });
         await recomputeBookingPaymentRollup(booking, { session });
         return;
@@ -563,15 +600,17 @@ export async function managerRecordCollection(req, res, next) {
 
       payment = await Payment.create(paymentPayload);
       try {
-        ledger = await createLedgerForCollection({
-          managerId,
-          bookingId: booking._id,
-          paymentId: payment._id,
-          amount,
-          managerCommissionAmount,
-          recordedBy: managerId,
-          note,
-        });
+        if (!isPhonePe) {
+          ledger = await createLedgerForCollection({
+            managerId,
+            bookingId: booking._id,
+            paymentId: payment._id,
+            amount,
+            managerCommissionAmount,
+            recordedBy: managerId,
+            note,
+          });
+        }
         await booking.save();
         await recomputeBookingPaymentRollup(booking);
       } catch (innerErr) {
@@ -602,7 +641,11 @@ export async function managerRecordCollection(req, res, next) {
 
     const out = await populateBooking(Booking.findById(id));
     const { payments, paymentSummary } = await attachPaymentsAndSummary(out);
-    return res.status(201).json({ booking: { ...out, payments, paymentSummary }, payment, ledgerEntry: ledger });
+    return res.status(201).json({
+      booking: { ...out, payments, paymentSummary },
+      payment,
+      ledgerEntry: ledger,
+    });
   } catch (err) {
     next(err);
   }
@@ -722,6 +765,55 @@ export async function getManagerWallet(req, res, next) {
       { $group: { _id: null, sum: { $sum: '$amount' } } },
     ]);
     const pendingWithdraw = await WithdrawRequest.findOne({ managerId, status: 'pending' }).lean();
+    const managerUser = await User.findById(managerId).select('payoutUpiId payoutDisplayName name').lean();
+
+    const mid = String(managerId);
+    const midOid = mongoose.isValidObjectId(mid) ? new mongoose.Types.ObjectId(mid) : null;
+    const pendingPhonePe = await Payment.find({
+      status: 'collected',
+      mode: 'offline',
+      'meta.collectionChannel': 'phonepe_qr',
+      $or: [
+        { 'meta.managerId': mid },
+        ...(midOid ? [{ 'meta.managerId': midOid }] : []),
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: 'bookingId',
+        select: 'issue userId bookingCode bookingSeq',
+        populate: { path: 'userId', select: 'name' },
+      })
+      .lean();
+
+    const pendingPhonePeRows = pendingPhonePe.map((p) => {
+      const booking = p.bookingId;
+      const patientName =
+        booking && typeof booking.userId === 'object' ? booking.userId?.name : null;
+      return {
+        _id: p._id,
+        amount: p.amount,
+        proofUrl: p.proofUrl || '',
+        note: p.note || '',
+        createdAt: p.createdAt,
+        managerCommissionAmount: Number(p.meta?.managerCommissionAmount) || 0,
+        bookingRef: booking
+          ? {
+              id: booking._id,
+              issue: booking.issue,
+              patientName,
+              bookingCode: booking.bookingCode || null,
+              bookingSeq: booking.bookingSeq ?? null,
+            }
+          : null,
+      };
+    });
+    const pendingPhonePeTotal = roundMoney2(
+      pendingPhonePeRows.reduce((s, r) => s + Number(r.amount || 0), 0),
+    );
+    const pendingPhonePeCut = roundMoney2(
+      pendingPhonePeRows.reduce((s, r) => s + Number(r.managerCommissionAmount || 0), 0),
+    );
 
     return res.json({
       pendingCommission: preview.managerTotal,
@@ -731,6 +823,11 @@ export async function getManagerWallet(req, res, next) {
       cashToRemit,
       totalCollected: roundMoney2(totalCollected[0]?.sum || 0),
       pendingWithdraw,
+      pendingPhonePe: pendingPhonePeRows,
+      pendingPhonePeTotal,
+      pendingPhonePeCut,
+      payoutUpiId: managerUser?.payoutUpiId || '',
+      payoutDisplayName: managerUser?.payoutDisplayName || '',
     });
   } catch (err) {
     next(err);

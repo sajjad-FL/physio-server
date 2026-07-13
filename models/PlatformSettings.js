@@ -33,6 +33,10 @@ const platformSettingsSchema = new mongoose.Schema(
     referralSignupBonusAmount: { type: Number, default: 100, min: 0 },
     referralSignupBonusAmountUpdatedAt: { type: Date, default: null },
 
+    /** Platform PhonePe QR image URL for manager UPI collections. */
+    phonePeQrUrl: { type: String, trim: true, default: '' },
+    phonePeQrUpdatedAt: { type: Date, default: null },
+
     defaultBookingAmountRupees: { type: Number, min: 0, default: null },
     /** @deprecated Use platformCommissionPerSessionRupees */
     platformCommissionPercent: { type: Number, min: 0, max: 100, default: null },
@@ -44,6 +48,11 @@ const platformSettingsSchema = new mongoose.Schema(
     defaultPhysioPricePerSession: { type: Number, min: 0, default: null },
     /** Flat care-manager commission per session (INR). Null → default (0 = disabled). */
     managerCommissionPerSessionRupees: { type: Number, min: 0, default: null },
+    /**
+     * Default home-session dual split (same shape as technique prices):
+     * { totalAmount, withManager: {platform,physio,manager}, withoutManager: {platform,physio,manager:0} }
+     */
+    defaultSessionPricing: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /**
      * Per-technique session prices (INR), keyed by issue name.
      * e.g. { "Cupping Therapy": 800, "Dry Needling": 1000, "Kinesio Taping": 700, "IASTM": 900 }

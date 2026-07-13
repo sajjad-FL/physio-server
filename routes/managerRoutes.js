@@ -20,7 +20,9 @@ import {
   createManagerWithdrawRequest,
   getManagerPendingWithdraw,
 } from '../controllers/withdrawController.js';
+import { getManagerPaymentQr } from '../controllers/platformSettingsController.js';
 import { rescheduleBooking, deleteAdminBookingSession } from '../controllers/bookingController.js';
+import { uploadPaymentProof } from '../config/upload.js';
 
 const router = Router();
 
@@ -35,7 +37,13 @@ router.get('/bookings/:id', ...managerChain, getManagerBooking);
 router.patch('/bookings/:id/assessment', ...managerChain, recordAssessment);
 router.patch('/bookings/:id/create-plan', ...managerChain, managerCreatePlan);
 router.patch('/bookings/:id/assign-physio', ...managerChain, managerAssignPhysio);
-router.post('/bookings/:id/collections', ...managerChain, managerRecordCollection);
+router.get('/payment-qr', ...managerChain, getManagerPaymentQr);
+router.post(
+  '/bookings/:id/collections',
+  ...managerChain,
+  uploadPaymentProof.single('proof'),
+  managerRecordCollection,
+);
 router.post('/bookings/:id/suggest-technique', ...managerChain, managerSuggestTechnique);
 router.patch('/bookings/:id/reschedule', ...managerChain, rescheduleBooking);
 router.delete('/bookings/:id/sessions/:sessionId', ...managerChain, deleteAdminBookingSession);

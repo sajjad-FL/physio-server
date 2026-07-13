@@ -244,6 +244,64 @@ function normalizeTechniquePrices(raw, defaultPlatform) {
   return out;
 }
 
+/**
+ * Default home-session dual split (same shape as technique prices).
+ * Flat legacy fields become the with-manager split when dual object is missing.
+ */
+export function normalizeDefaultSessionPricing(raw, fallback = {}) {
+  const totalFallback =
+    Number(fallback.totalAmount) ||
+    Number(fallback.defaultBookingAmountRupees) ||
+    envDefaultBookingAmount();
+  const platformFallback = Number.isFinite(Number(fallback.platformCommissionPerSessionRupees))
+    ? Number(fallback.platformCommissionPerSessionRupees)
+    : Number.isFinite(Number(fallback.platform))
+      ? Number(fallback.platform)
+      : envCommissionPerSession(totalFallback);
+  const physioFallback = Number.isFinite(Number(fallback.defaultPhysioPricePerSession))
+    ? Number(fallback.defaultPhysioPricePerSession)
+    : Number.isFinite(Number(fallback.physio))
+      ? Number(fallback.physio)
+      : DEFAULT_PHYSIO_PRICE_PER_SESSION;
+  const managerFallback = Number.isFinite(Number(fallback.managerCommissionPerSessionRupees))
+    ? Number(fallback.managerCommissionPerSessionRupees)
+    : Number.isFinite(Number(fallback.manager))
+      ? Number(fallback.manager)
+      : DEFAULT_MANAGER_COMMISSION_PER_SESSION;
+
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    !Array.isArray(raw) &&
+    (raw.withManager || raw.withoutManager || raw.totalAmount != null)
+  ) {
+    return expandTechniqueEntry(raw, totalFallback, platformFallback);
+  }
+
+  const totalAmount = roundMoney(Math.max(0, Number(totalFallback) || 0)) || envDefaultBookingAmount();
+  let platform = roundMoney(Math.max(0, Number(platformFallback) || 0));
+  let physio = roundMoney(Math.max(0, Number(physioFallback) || 0));
+  let manager = roundMoney(Math.max(0, Number(managerFallback) || 0));
+  const sum = splitSum({ platform, physio, manager });
+  if (sum <= 0) {
+    platform = Math.min(totalAmount, Math.max(0, roundMoney(platformFallback)));
+    physio = roundMoney(Math.max(0, totalAmount - platform));
+    manager = 0;
+  } else if (Math.abs(sum - totalAmount) > 0.009) {
+    physio = roundMoney(Math.max(0, totalAmount - platform - manager));
+  }
+  const withManager = { platform, physio, manager };
+  const withoutManager = {
+    platform: roundMoney(platform + manager),
+    physio,
+    manager: 0,
+  };
+  if (splitSum(withoutManager) !== totalAmount) {
+    withoutManager.physio = roundMoney(Math.max(0, totalAmount - withoutManager.platform));
+  }
+  return { totalAmount, withManager, withoutManager };
+}
+
 /** Public Book-by-Need price — always patient totalAmount (same with/without manager). */
 function flattenTechniquePrices(prices) {
   const out = {};
@@ -264,15 +322,24 @@ function defaultTechniquePriceObjects(defaultPlatform) {
 
 async function buildSnapshot() {
   const doc = await ensureSingletonLean();
-  const defaultBookingAmountRupees = readMoney(
+  const legacyTotal = readMoney(doc, 'defaultBookingAmountRupees', envDefaultBookingAmount());
+  const legacyPlatform = resolvePlatformCommissionPerSession(doc, legacyTotal);
+  const legacyPhysio = readMoney(doc, 'defaultPhysioPricePerSession', DEFAULT_PHYSIO_PRICE_PER_SESSION);
+  const legacyManager = readMoney(
     doc,
-    'defaultBookingAmountRupees',
-    envDefaultBookingAmount(),
+    'managerCommissionPerSessionRupees',
+    DEFAULT_MANAGER_COMMISSION_PER_SESSION,
   );
-  const platformCommissionPerSessionRupees = resolvePlatformCommissionPerSession(
-    doc,
-    defaultBookingAmountRupees,
-  );
+  const defaultSessionPricing = normalizeDefaultSessionPricing(doc?.defaultSessionPricing, {
+    defaultBookingAmountRupees: legacyTotal,
+    platformCommissionPerSessionRupees: legacyPlatform,
+    defaultPhysioPricePerSession: legacyPhysio,
+    managerCommissionPerSessionRupees: legacyManager,
+  });
+  const defaultBookingAmountRupees = defaultSessionPricing.totalAmount;
+  const platformCommissionPerSessionRupees = defaultSessionPricing.withManager.platform;
+  const defaultPhysioPricePerSession = defaultSessionPricing.withManager.physio;
+  const managerCommissionPerSessionRupees = defaultSessionPricing.withManager.manager;
   const platformCommissionPercent =
     defaultBookingAmountRupees > 0
       ? Math.round((platformCommissionPerSessionRupees / defaultBookingAmountRupees) * 10000) / 100
@@ -294,16 +361,6 @@ async function buildSnapshot() {
     DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
     50,
   );
-  const defaultPhysioPricePerSession = readMoney(
-    doc,
-    'defaultPhysioPricePerSession',
-    DEFAULT_PHYSIO_PRICE_PER_SESSION,
-  );
-  const managerCommissionPerSessionRupees = readMoney(
-    doc,
-    'managerCommissionPerSessionRupees',
-    DEFAULT_MANAGER_COMMISSION_PER_SESSION,
-  );
   const planTiers = normalizePlanTiers(doc?.planTiers);
   const planMilestones = normalizeMilestonesMap(doc?.planMilestones);
   const techniquePrices = normalizeTechniquePrices(
@@ -321,6 +378,7 @@ async function buildSnapshot() {
     homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees,
+    defaultSessionPricing,
     techniquePrices,
     allowedPlanSessionCounts,
     planTiers,
@@ -348,20 +406,37 @@ export async function getPricingSnapshot() {
 function snapshotOrFallback() {
   if (cache) return cache;
   const platform = envCommissionPerSession(envDefaultBookingAmount());
-  return {
+  const defaultSessionPricing = normalizeDefaultSessionPricing(null, {
     defaultBookingAmountRupees: envDefaultBookingAmount(),
     platformCommissionPerSessionRupees: platform,
+    defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
+    managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+  });
+  return {
+    defaultBookingAmountRupees: defaultSessionPricing.totalAmount,
+    platformCommissionPerSessionRupees: defaultSessionPricing.withManager.platform,
     platformCommissionPercent: envCommissionPercent(),
     distanceSurchargeBaseKm: DEFAULT_DISTANCE_SURCHARGE_BASE_KM,
     distanceSurchargePerKmRupees: DEFAULT_DISTANCE_SURCHARGE_PER_KM,
     homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
-    defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
-    managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+    defaultPhysioPricePerSession: defaultSessionPricing.withManager.physio,
+    managerCommissionPerSessionRupees: defaultSessionPricing.withManager.manager,
+    defaultSessionPricing,
     techniquePrices: defaultTechniquePriceObjects(platform),
     allowedPlanSessionCounts: [...ALLOWED_PLAN_SESSION_COUNTS],
     planTiers: DEFAULT_PLAN_TIERS.map((t) => ({ ...t })),
     planMilestones: normalizeMilestonesMap(null),
   };
+}
+
+export function getDefaultSessionPricingSync() {
+  return snapshotOrFallback().defaultSessionPricing;
+}
+
+/** @param {boolean} [includeManager=true] */
+export function getDefaultSessionSplitSync(includeManager = true) {
+  const entry = getDefaultSessionPricingSync();
+  return includeManager ? entry.withManager : entry.withoutManager;
 }
 
 export function getManagerCommissionPerSessionSync() {
@@ -518,6 +593,7 @@ export async function getPublicPricingSettings() {
     homePlanMaxDiscountPercent: s.homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession: s.defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees: s.managerCommissionPerSessionRupees,
+    defaultSessionPricing: s.defaultSessionPricing,
     techniquePrices: flattenTechniquePrices(s.techniquePrices),
     allowedPlanSessionCounts: s.allowedPlanSessionCounts,
     planTiers: s.planTiers,
@@ -635,6 +711,44 @@ export function normalizePricingPatch(body) {
     } else out.managerCommissionPerSessionRupees = Math.round(n * 100) / 100;
   }
 
+  if (body?.defaultSessionPricing !== undefined) {
+    if (
+      typeof body.defaultSessionPricing !== 'object' ||
+      body.defaultSessionPricing === null ||
+      Array.isArray(body.defaultSessionPricing)
+    ) {
+      errors.push('defaultSessionPricing must be an object with totalAmount and splits');
+    } else {
+      const raw = body.defaultSessionPricing;
+      const totalAmount = roundMoney(Number(raw.totalAmount) || 0);
+      if (!Number.isFinite(totalAmount) || totalAmount <= 0 || totalAmount > PRICING_MONEY_MAX) {
+        errors.push('defaultSessionPricing.totalAmount must be between 1 and 50000');
+      } else {
+        const withManager = readSplitParts(raw.withManager || raw);
+        const withoutManager = readSplitParts({
+          ...(raw.withoutManager || {}),
+          manager: 0,
+        });
+        if (splitSum(withManager) !== totalAmount) {
+          errors.push(
+            `defaultSessionPricing: with-manager split must equal totalAmount ₹${totalAmount}`,
+          );
+        } else if (splitSum(withoutManager) !== totalAmount) {
+          errors.push(
+            `defaultSessionPricing: without-manager split must equal totalAmount ₹${totalAmount}`,
+          );
+        } else {
+          out.defaultSessionPricing = { totalAmount, withManager, withoutManager };
+          // Keep legacy flat fields in sync with with-manager (default care path).
+          out.defaultBookingAmountRupees = totalAmount;
+          out.platformCommissionPerSessionRupees = withManager.platform;
+          out.defaultPhysioPricePerSession = withManager.physio;
+          out.managerCommissionPerSessionRupees = withManager.manager;
+        }
+      }
+    }
+  }
+
   if (body?.techniquePrices !== undefined) {
     if (typeof body.techniquePrices !== 'object' || body.techniquePrices === null || Array.isArray(body.techniquePrices)) {
       errors.push('techniquePrices must be an object');
@@ -746,6 +860,7 @@ export async function applyPricingPatch(patch) {
     patch.homePlanMaxDiscountPercent != null ||
     patch.defaultPhysioPricePerSession != null ||
     patch.managerCommissionPerSessionRupees != null ||
+    patch.defaultSessionPricing != null ||
     patch.techniquePrices != null
   ) {
     $set.pricingUpdatedAt = now;
@@ -771,6 +886,7 @@ export async function resetPricingToDefaults() {
         homePlanMaxDiscountPercent: null,
         defaultPhysioPricePerSession: null,
         managerCommissionPerSessionRupees: null,
+        defaultSessionPricing: undefined,
         techniquePrices: undefined,
         planTiers: undefined,
         planMilestones: undefined,

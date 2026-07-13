@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin } from '../middleware/adminMiddleware.js';
-import { uploadProductImages } from '../config/upload.js';
+import { uploadPhonePeQr, uploadProductImages } from '../config/upload.js';
 import {
   listPhysioVerifications,
   patchPhysioVerification,
@@ -36,7 +36,13 @@ import {
   adminVerifyPayment,
   adminRejectPayment,
 } from '../controllers/installmentsController.js';
-import { getAdminPlatformSettings, patchAdminPlatformSettings, uploadPhysioNdaTemplate } from '../controllers/platformSettingsController.js';
+import {
+  getAdminPlatformSettings,
+  patchAdminPlatformSettings,
+  uploadPhysioNdaTemplate,
+  uploadAdminPhonePeQr,
+  clearAdminPhonePeQr,
+} from '../controllers/platformSettingsController.js';
 import {
   getAdminPricingSettingsHandler,
   patchAdminPricingSettingsHandler,
@@ -109,6 +115,13 @@ router.get('/finance/physios/:id', requireAdmin, getPhysioFinanceDetail);
 router.post('/finance/settle-commission', requireAdmin, postSettleCommission);
 router.get('/platform/settings', requireAdmin, getAdminPlatformSettings);
 router.patch('/platform/settings', requireAdmin, patchAdminPlatformSettings);
+router.post(
+  '/platform/settings/phonepe-qr',
+  requireAdmin,
+  uploadPhonePeQr.single('qr'),
+  uploadAdminPhonePeQr,
+);
+router.delete('/platform/settings/phonepe-qr', requireAdmin, clearAdminPhonePeQr);
 router.post('/platform/physio-nda', requireAdmin, uploadPhysioNdaTemplate);
 router.get('/pricing/settings', requireAdmin, getAdminPricingSettingsHandler);
 router.patch('/pricing/settings', requireAdmin, patchAdminPricingSettingsHandler);

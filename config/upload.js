@@ -11,8 +11,14 @@ if (!fs.existsSync(uploadsRoot)) {
   fs.mkdirSync(uploadsRoot, { recursive: true });
 }
 
-/** Max size per uploaded file (images + PDFs), in bytes */
+/** Target / stored max after compression (must match client MAX_UPLOAD_BYTES). */
 export const MAX_UPLOAD_BYTES = 500 * 1024;
+
+/**
+ * Multer ingress cap — large phone photos may arrive before client/server compression.
+ * Persisted images are still compressed to MAX_UPLOAD_BYTES.
+ */
+export const MAX_UPLOAD_INGRESS_BYTES = 3 * 1024 * 1024;
 
 const diskStorage = multer.diskStorage({
   destination(_req, _file, cb) {
@@ -27,7 +33,7 @@ const diskStorage = multer.diskStorage({
 /** When AWS S3 is configured, physio docs are buffered and uploaded to S3; otherwise saved under /uploads. */
 export const uploadPhysioDocs = multer({
   storage: isS3Configured() ? multer.memoryStorage() : diskStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES },
+  limits: { fileSize: MAX_UPLOAD_INGRESS_BYTES },
 });
 
 /** Field names used by physio registration / onboarding uploads (multer .fields). */
@@ -57,7 +63,7 @@ function onboardingFileFilter(_req, file, cb) {
 
 export const uploadOnboardingFiles = multer({
   storage: isS3Configured() ? multer.memoryStorage() : diskStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES },
+  limits: { fileSize: MAX_UPLOAD_INGRESS_BYTES },
   fileFilter: onboardingFileFilter,
 });
 
@@ -81,7 +87,7 @@ const avatarStorage = multer.diskStorage({
 export const uploadAvatar = multer({
   // Keep profile avatar flow on S3 when configured, same as docs.
   storage: isS3Configured() ? multer.memoryStorage() : avatarStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES },
+  limits: { fileSize: MAX_UPLOAD_INGRESS_BYTES },
   fileFilter(_req, file, cb) {
     const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
     if (ok) cb(null, true);
@@ -107,7 +113,7 @@ const productImageStorage = multer.diskStorage({
 
 export const uploadProductImage = multer({
   storage: isS3Configured() ? multer.memoryStorage() : productImageStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES },
+  limits: { fileSize: MAX_UPLOAD_INGRESS_BYTES },
   fileFilter(_req, file, cb) {
     const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
     if (ok) cb(null, true);
@@ -117,10 +123,63 @@ export const uploadProductImage = multer({
 
 export const uploadProductImages = multer({
   storage: isS3Configured() ? multer.memoryStorage() : productImageStorage,
-  limits: { fileSize: MAX_UPLOAD_BYTES },
+  limits: { fileSize: MAX_UPLOAD_INGRESS_BYTES },
   fileFilter(_req, file, cb) {
     const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
     if (ok) cb(null, true);
     else cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
   },
 }).array('images', 6);
+
+/** PhonePe QR + payment screenshots — same ingress as other images; stored ≤ MAX_UPLOAD_BYTES. */
+export const MAX_PAYMENT_IMAGE_BYTES = MAX_UPLOAD_INGRESS_BYTES;
+
+const phonePeDir = path.join(uploadsRoot, 'phonepe');
+if (!fs.existsSync(phonePeDir)) {
+  fs.mkdirSync(phonePeDir, { recursive: true });
+}
+
+const phonePeStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    cb(null, phonePeDir);
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const safeExt = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext) ? ext : '.jpg';
+    cb(null, `qr-${Date.now()}${safeExt}`);
+  },
+});
+
+function imageOnlyFilter(_req, file, cb) {
+  const ok = /^image\/(jpeg|png|webp)$/.test(file.mimetype);
+  if (ok) cb(null, true);
+  else cb(new Error('Only JPEG, PNG, or WebP images are allowed'));
+}
+
+export const uploadPhonePeQr = multer({
+  storage: isS3Configured() ? multer.memoryStorage() : phonePeStorage,
+  limits: { fileSize: MAX_PAYMENT_IMAGE_BYTES },
+  fileFilter: imageOnlyFilter,
+});
+
+const paymentProofDir = path.join(uploadsRoot, 'payment-proofs');
+if (!fs.existsSync(paymentProofDir)) {
+  fs.mkdirSync(paymentProofDir, { recursive: true });
+}
+
+const paymentProofStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    cb(null, paymentProofDir);
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const safeExt = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext) ? ext : '.jpg';
+    cb(null, `proof-${Date.now()}${safeExt}`);
+  },
+});
+
+export const uploadPaymentProof = multer({
+  storage: isS3Configured() ? multer.memoryStorage() : paymentProofStorage,
+  limits: { fileSize: MAX_PAYMENT_IMAGE_BYTES },
+  fileFilter: imageOnlyFilter,
+});

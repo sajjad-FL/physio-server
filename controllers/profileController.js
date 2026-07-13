@@ -8,6 +8,9 @@ import { uploadsRoot } from '../config/upload.js';
 import { isS3Configured, uploadPhysioAsset } from '../utils/s3Upload.js';
 import { normalizeRole } from '../utils/userRole.js';
 import { normalizePatientGender } from '../utils/patientGender.js';
+import { normalizePayoutDisplayName, normalizePayoutUpiId } from '../utils/payoutUpi.js';
+import WithdrawRequest from '../models/WithdrawRequest.js';
+import { ensureCompressedMulterImage } from '../utils/compressImageBuffer.js';
 
 /** Patients need name, DOB, gender, and a non-trivial address/location before platform features unlock. */
 function isPatientProfileCompleteDoc(user) {
@@ -138,7 +141,7 @@ export async function getProfile(req, res, next) {
 
     const user = await User.findById(userId)
       .select(
-        'name email dob gender isProfileComplete phone role avatarUrl address location coordinates physioId isVerified hasPasswordLogin roles'
+        'name email dob gender isProfileComplete phone role avatarUrl address location coordinates physioId isVerified hasPasswordLogin roles payoutUpiId payoutDisplayName'
       )
       .lean();
     if (!user) return res.status(404).json({ message: 'User not found' });
@@ -146,10 +149,12 @@ export async function getProfile(req, res, next) {
     const role = normalizeRole(user);
     let physioProfile = null;
     let physioVerification = null;
+    let payoutUpiId = String(user.payoutUpiId || '');
+    let payoutDisplayName = String(user.payoutDisplayName || '');
     if (role === 'physio' && isValidPhysioObjectId(user.physioId)) {
       const physio = await Physiotherapist.findById(user.physioId)
         .select(
-          'specialization experience pricePerSession pricePerSessionMax avatar verificationStatus isVerified verification verificationNote'
+          'specialization experience pricePerSession pricePerSessionMax avatar verificationStatus isVerified verification verificationNote payoutUpiId payoutDisplayName'
         )
         .lean();
       if (physio) {
@@ -168,6 +173,8 @@ export async function getProfile(req, res, next) {
           isVerified: physio.isVerified === true,
           rejectionReason: physio.verification?.rejectionReason || '',
         };
+        payoutUpiId = String(physio.payoutUpiId || '');
+        payoutDisplayName = String(physio.payoutDisplayName || '');
       }
     }
 
@@ -183,6 +190,8 @@ export async function getProfile(req, res, next) {
       address: profileAddress(user),
       physio: physioProfile,
       physioVerification,
+      payoutUpiId,
+      payoutDisplayName,
     });
   } catch (err) {
     next(err);
@@ -316,6 +325,76 @@ export async function patchProfile(req, res, next) {
   }
 }
 
+/**
+ * Care manager / physio: save UPI destination for withdrawals.
+ * Managers store on User; physios store on Physiotherapist profile.
+ */
+export async function patchPayoutDetails(req, res, next) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const upi = normalizePayoutUpiId(req.body?.payoutUpiId);
+    if (!upi.ok) return res.status(400).json({ message: upi.message });
+    const display = normalizePayoutDisplayName(req.body?.payoutDisplayName);
+    if (!display.ok) return res.status(400).json({ message: display.message });
+
+    const user = await User.findById(userId).select('role roles physioId name');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const role = normalizeRole(user);
+    if (role === 'physio' && isValidPhysioObjectId(user.physioId)) {
+      const physio = await Physiotherapist.findById(user.physioId);
+      if (!physio) return res.status(404).json({ message: 'Physiotherapist profile not found' });
+      physio.payoutUpiId = upi.value;
+      physio.payoutDisplayName = display.value || String(physio.name || user.name || '').trim();
+      await physio.save();
+      await WithdrawRequest.updateMany(
+        {
+          physioId: physio._id,
+          status: 'pending',
+          $or: [{ payoutUpiId: { $exists: false } }, { payoutUpiId: '' }],
+        },
+        {
+          $set: {
+            payoutUpiId: physio.payoutUpiId,
+            payoutDisplayName: physio.payoutDisplayName,
+          },
+        }
+      );
+      return res.json({
+        message: 'Payout UPI saved',
+        payoutUpiId: physio.payoutUpiId,
+        payoutDisplayName: physio.payoutDisplayName || '',
+      });
+    }
+
+    user.payoutUpiId = upi.value;
+    user.payoutDisplayName = display.value || String(user.name || '').trim();
+    await user.save();
+    await WithdrawRequest.updateMany(
+      {
+        managerId: user._id,
+        status: 'pending',
+        $or: [{ payoutUpiId: { $exists: false } }, { payoutUpiId: '' }],
+      },
+      {
+        $set: {
+          payoutUpiId: user.payoutUpiId,
+          payoutDisplayName: user.payoutDisplayName,
+        },
+      }
+    );
+    return res.json({
+      message: 'Payout UPI saved',
+      payoutUpiId: user.payoutUpiId,
+      payoutDisplayName: user.payoutDisplayName || '',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 const MAX_EXPO_PUSH_TOKENS_PER_USER = 10;
 
 /** Mobile: register Expo push token for authenticated user (patient or physio). */
@@ -353,6 +432,8 @@ export async function patchAvatar(req, res, next) {
     if (!req.file) {
       return res.status(400).json({ message: 'Image file is required' });
     }
+
+    await ensureCompressedMulterImage(req.file, { maxEdge: 1024 });
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });

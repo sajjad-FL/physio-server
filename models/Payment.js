@@ -56,6 +56,8 @@ const paymentSchema = new mongoose.Schema(
     note: { type: String, default: '', trim: true, maxlength: 500 },
     /** Admin's reason when rejecting an offline collection. */
     rejectReason: { type: String, default: '', trim: true, maxlength: 500 },
+    /** Screenshot / proof URL (manager PhonePe QR collections). */
+    proofUrl: { type: String, trim: true, default: '' },
     meta: {
       type: mongoose.Schema.Types.Mixed,
       default: {},

@@ -74,6 +74,9 @@ export async function recomputeBookingPaymentRollup(bookingOrId, opts = {}) {
 
   booking.totalPaid = totalPaid;
   if (!booking.payment) booking.payment = {};
+  if (totalAmount > 0) {
+    booking.payment.amount = totalAmount;
+  }
   if (totalAmount > 0 && totalPaid + 0.009 >= totalAmount) {
     booking.payment.status = 'verified';
   } else if (anyInFlight) {
@@ -126,7 +129,11 @@ export function deriveBookingPaymentSummary(booking, payments = []) {
   const totalPaid = roundMoney2(verifiedSum);
   const totalCollected = roundMoney2(collectedSum);
   const totalPending = roundMoney2(pendingSum);
-  const outstanding = roundMoney2(Math.max(0, totalAmount - totalPaid));
+  // Collectable remaining: exclude verified + in-flight collected/pending so
+  // managers cannot double-record while a PhonePe screenshot awaits admin.
+  const outstanding = roundMoney2(
+    Math.max(0, totalAmount - verifiedSum - collectedSum - pendingSum),
+  );
 
   const sessionsCount = Array.isArray(booking?.schedule) && booking.schedule.length > 0
     ? booking.schedule.length

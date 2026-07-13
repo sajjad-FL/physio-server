@@ -266,3 +266,85 @@ export async function distributeSettlementBatch(batch) {
     commissionTotal: roundMoney2(commissionTotal),
   };
 }
+
+/**
+ * Credit physio + manager after admin verifies a manager PhonePe QR collection.
+ * Money already landed on the platform QR — no cash ledger / settlement batch.
+ */
+export async function distributeManagerPhonePePayment(booking, payment) {
+  const amount = roundMoney2(Number(payment?.amount) || 0);
+  if (amount <= 0 || !booking) {
+    return { physioShare: 0, managerShare: 0, platformShare: 0 };
+  }
+
+  const managerId = payment?.meta?.managerId || booking.managerId;
+  const snapCommission = Number(payment?.meta?.managerCommissionAmount);
+  const entry = {
+    amount,
+    managerCommissionAmount: Number.isFinite(snapCommission) ? snapCommission : null,
+  };
+  const shares = computeEntryShares(entry, booking);
+  const payKey = String(payment._id);
+
+  if (shares.physioShare > 0 && booking.physioId) {
+    await postOnce(
+      {
+        bookingId: booking._id,
+        physioId: booking.physioId,
+        type: 'online',
+        direction: 'credit',
+        status: POSTED,
+        'meta.leg': 'earning',
+        'meta.paymentId': payKey,
+      },
+      {
+        bookingId: booking._id,
+        physioId: booking.physioId,
+        type: 'online',
+        totalAmount: shares.physioShare,
+        commission: 0,
+        physioEarning: shares.physioShare,
+        direction: 'credit',
+        status: POSTED,
+        meta: {
+          leg: 'earning',
+          paymentId: payKey,
+          source: 'manager_phonepe_qr',
+          physioBasis: shares.physioBasis,
+        },
+      },
+    );
+  }
+
+  if (shares.managerShare > 0 && managerId) {
+    await postOnce(
+      {
+        bookingId: booking._id,
+        physioId: null,
+        type: 'manager_commission',
+        direction: 'credit',
+        status: POSTED,
+        'meta.leg': 'commission',
+        'meta.paymentId': payKey,
+      },
+      {
+        bookingId: booking._id,
+        userId: managerId,
+        physioId: null,
+        type: 'manager_commission',
+        totalAmount: shares.managerShare,
+        commission: shares.managerShare,
+        physioEarning: 0,
+        direction: 'credit',
+        status: POSTED,
+        meta: {
+          leg: 'commission',
+          paymentId: payKey,
+          source: 'manager_phonepe_qr',
+        },
+      },
+    );
+  }
+
+  return shares;
+}

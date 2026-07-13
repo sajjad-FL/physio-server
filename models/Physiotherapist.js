@@ -128,6 +128,9 @@ const physiotherapistSchema = new mongoose.Schema(
     qualificationDeclarationAcceptedAt: { type: Date, default: null },
     avgRating: { type: Number, default: 0, min: 0, max: 5 },
     totalReviews: { type: Number, default: 0, min: 0 },
+    /** UPI ID for earnings withdrawals. */
+    payoutUpiId: { type: String, trim: true, default: '' },
+    payoutDisplayName: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
 );
