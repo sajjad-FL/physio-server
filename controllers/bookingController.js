@@ -825,14 +825,31 @@ export async function requestTechniqueBooking(req, res, next) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
-    const { name, location, issue, date, timeSlot, consentAccepted } = req.body || {};
+    const body = req.body || {};
+    const { issue, date, timeSlot, consentAccepted } = body;
     if (consentAccepted !== true) {
       return res.status(400).json({ message: 'You must accept consent before booking' });
     }
-    if (!name?.trim() || !location?.trim() || !issue?.trim() || !date || !timeSlot) {
-      return res
-        .status(400)
-        .json({ message: 'name, location, issue, date, and timeSlot are required' });
+
+    const existingUser = await User.findById(userId)
+      .select('name location coordinates address isVerified')
+      .lean();
+    if (!existingUser || !existingUser.isVerified) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    const name = String(body.name || existingUser.name || '').trim();
+    const location = String(
+      body.location || existingUser.address?.text || existingUser.location || '',
+    ).trim();
+    if (!name || !location || !issue?.trim() || !date || !timeSlot) {
+      return res.status(400).json({
+        message: !name
+          ? 'Complete your profile name before booking'
+          : !location
+            ? 'Add a home address before booking'
+            : 'name, location, issue, date, and timeSlot are required',
+      });
     }
     const techniqueIssue = String(issue).trim();
     if (!isTechniqueIssue(techniqueIssue)) {
@@ -870,9 +887,16 @@ export async function requestTechniqueBooking(req, res, next) {
       return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
     }
 
-    const coords = parseCoords(req.body);
-    const pincode = normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
-    const userUpdate = { name: name.trim(), location: location.trim() };
+    let coords = parseCoords(body);
+    if (!coords) {
+      const lat = existingUser.address?.lat ?? existingUser.coordinates?.lat;
+      const lng = existingUser.address?.lng ?? existingUser.coordinates?.lng;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        coords = { lat, lng };
+      }
+    }
+    const pincode = normalizePincode(body?.pincode) || normalizePincode(location);
+    const userUpdate = { name, location };
     if (coords) userUpdate.coordinates = coords;
     if (pincode) userUpdate.pincode = pincode;
     const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
@@ -1338,7 +1362,12 @@ export async function rescheduleBooking(req, res, next) {
       return res.status(400).json({ message: 'Invalid booking id' });
     }
 
-    const { date, timeSlot, sessionId: rawSessionId } = req.body || {};
+    const {
+      date,
+      timeSlot,
+      sessionId: rawSessionId,
+      assessmentVisit: rawAssessmentVisit,
+    } = req.body || {};
     if (!date || !timeSlot) {
       return res.status(400).json({ message: 'date and timeSlot are required' });
     }
@@ -1376,32 +1405,16 @@ export async function rescheduleBooking(req, res, next) {
     }
 
     const hasSchedule = Array.isArray(booking.schedule) && booking.schedule.length > 0;
-    let scheduleIndex = 0;
-    let sub = null;
+    /** Complimentary assessment / primary booking.date — do not touch plan schedule rows. */
+    const assessmentVisitOnly = Boolean(rawAssessmentVisit);
 
-    if (hasSchedule) {
-      if (rawSessionId && mongoose.isValidObjectId(rawSessionId) && String(rawSessionId) !== String(booking._id)) {
-        const idx = booking.schedule.findIndex((s) => s._id && String(s._id) === String(rawSessionId));
-        if (idx < 0) {
-          return res.status(404).json({ message: 'Session not found' });
-        }
-        scheduleIndex = idx;
-        sub = booking.schedule[idx];
-      } else {
-        scheduleIndex = 0;
-        sub = booking.schedule[0];
+    if (assessmentVisitOnly) {
+      if (booking.assessmentCompletedAt) {
+        return res.status(400).json({ message: 'Cannot reschedule a completed assessment visit' });
       }
-    }
-
-    const oldDate = hasSchedule && sub ? sub.date : booking.date;
-    const oldTime = hasSchedule && sub ? sub.time : booking.timeSlot;
-
-    if (oldDate === date && oldTime === normalizedTimeSlot) {
-      return res.status(400).json({ message: 'Already scheduled for this slot' });
-    }
-
-    const updatesPrimarySlot = !hasSchedule || scheduleIndex === 0;
-    if (updatesPrimarySlot) {
+      if (booking.date === date && booking.timeSlot === normalizedTimeSlot) {
+        return res.status(400).json({ message: 'Already scheduled for this slot' });
+      }
       const conflict = await hasPhysioSlotConflict({
         bookingId: booking._id,
         physioId: booking.physioId,
@@ -1411,21 +1424,65 @@ export async function rescheduleBooking(req, res, next) {
       if (conflict) {
         return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
       }
-    }
 
-    booking.rescheduled = true;
-    booking.rescheduledAt = new Date();
-
-    if (updatesPrimarySlot) {
+      booking.rescheduled = true;
+      booking.rescheduledAt = new Date();
       booking.previousDate = booking.date;
       booking.previousTimeSlot = booking.timeSlot;
       booking.date = date;
       booking.timeSlot = normalizedTimeSlot;
-    }
+    } else {
+      let scheduleIndex = 0;
+      let sub = null;
 
-    if (hasSchedule && sub) {
-      sub.date = date;
-      sub.time = normalizedTimeSlot;
+      if (hasSchedule) {
+        if (rawSessionId && mongoose.isValidObjectId(rawSessionId) && String(rawSessionId) !== String(booking._id)) {
+          const idx = booking.schedule.findIndex((s) => s._id && String(s._id) === String(rawSessionId));
+          if (idx < 0) {
+            return res.status(404).json({ message: 'Session not found' });
+          }
+          scheduleIndex = idx;
+          sub = booking.schedule[idx];
+        } else {
+          scheduleIndex = 0;
+          sub = booking.schedule[0];
+        }
+      }
+
+      const oldDate = hasSchedule && sub ? sub.date : booking.date;
+      const oldTime = hasSchedule && sub ? sub.time : booking.timeSlot;
+
+      if (oldDate === date && oldTime === normalizedTimeSlot) {
+        return res.status(400).json({ message: 'Already scheduled for this slot' });
+      }
+
+      const updatesPrimarySlot = !hasSchedule || scheduleIndex === 0;
+      if (updatesPrimarySlot) {
+        const conflict = await hasPhysioSlotConflict({
+          bookingId: booking._id,
+          physioId: booking.physioId,
+          date,
+          timeSlot: normalizedTimeSlot,
+        });
+        if (conflict) {
+          return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
+        }
+      }
+
+      booking.rescheduled = true;
+      booking.rescheduledAt = new Date();
+
+      if (updatesPrimarySlot) {
+        booking.previousDate = booking.date;
+        booking.previousTimeSlot = booking.timeSlot;
+        booking.date = date;
+        booking.timeSlot = normalizedTimeSlot;
+      }
+
+      if (hasSchedule && sub) {
+        sub.date = date;
+        sub.time = normalizedTimeSlot;
+      }
     }
 
     try {

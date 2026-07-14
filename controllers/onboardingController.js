@@ -177,11 +177,7 @@ export async function patchOnboarding(req, res, next) {
 
       const minRaw = practice.feeMin !== undefined ? practice.feeMin : practice.fees;
       if (minRaw != null && String(minRaw).trim() !== '') {
-        const min = Number(minRaw);
-        if (Number.isFinite(min) && min > 0) {
-          $set.pricePerSession = min;
-          $set.pricePerSessionMax = null;
-        }
+        // Session fees are admin-owned; ignore physio-submitted fee during onboarding.
       }
     }
 

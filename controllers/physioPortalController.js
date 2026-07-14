@@ -80,7 +80,7 @@ export async function listMyBookings(req, res, next) {
       Booking.find(query)
       .populate('userId', 'name phone location coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
-      .sort({ date: 1, timeSlot: 1 })
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),

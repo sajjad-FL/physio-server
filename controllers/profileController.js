@@ -287,12 +287,9 @@ export async function patchProfile(req, res, next) {
           }
 
           if (feesRaw !== undefined) {
-            const fees = Number(feesRaw);
-            if (!Number.isFinite(fees) || fees < 0) {
-              return res.status(400).json({ message: 'Fees must be a valid non-negative amount' });
-            }
-            physio.pricePerSession = fees;
-            physio.pricePerSessionMax = null;
+            return res.status(403).json({
+              message: 'Session fees are set by admin only. Contact support if your rate needs updating.',
+            });
           }
         }
 

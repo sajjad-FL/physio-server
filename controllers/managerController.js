@@ -12,6 +12,7 @@ import { previewDistribution } from '../services/managerSettlement.js';
 import { isPhysioBookable } from '../utils/physioVerification.js';
 import {
   computeDistanceSurcharge,
+  getDefaultSessionPricingSync,
   getEffectiveManagerCommissionPerSessionSync,
   getManagerCommissionPerSessionSync,
   getTechniqueSplitSync,
@@ -188,7 +189,7 @@ export async function listManagerBookings(req, res, next) {
     if (workflowStatus) filter.workflowStatus = String(workflowStatus);
 
     const [items, total] = await Promise.all([
-      populateBooking(Booking.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(take)),
+      populateBooking(Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(take)),
       Booking.countDocuments(filter),
     ]);
 
@@ -280,30 +281,20 @@ export async function managerCreatePlan(req, res, next) {
 
     const isUpdate = isAwaitingPatientConsent(booking.planStatus);
 
-    // Manager sets the patient price freely (may exceed the physio's flat rate —
-    // the margin funds the manager commission and platform share).
-    const validated = validateHomePlanInput(req.body, { excludeAssessmentDate: booking.date });
-    if (validated.error) return res.status(400).json({ message: validated.error });
-
-    const commissionPerSession = getManagerCommissionPerSessionSync();
-
-    // If a physio is already assigned, the discounted patient price must cover
-    // his flat rate plus the manager commission.
-    if (booking.physioId) {
-      const physioRateDoc = await Physiotherapist.findById(booking.physioId).select('pricePerSession').lean();
-      const physioRate = Number(physioRateDoc?.pricePerSession);
-      if (Number.isFinite(physioRate) && physioRate > 0) {
-        const discounted = roundMoney2(
-          validated.amountPerSession * (1 - (validated.discountPercent || 0) / 100),
-        );
-        if (discounted < physioRate + commissionPerSession) {
-          return res.status(400).json({
-            message: `Patient price ₹${discounted}/session after discount cannot cover the physiotherapist rate ₹${physioRate} + manager commission ₹${commissionPerSession}`,
-          });
-        }
-        booking.physioRatePerSession = physioRate;
-      }
+    // Patient price is admin-only (Defaults → session pricing). Managers set schedule/discount path only.
+    const pricing = getDefaultSessionPricingSync();
+    const adminAmount = Number(pricing?.totalAmount);
+    if (!Number.isFinite(adminAmount) || adminAmount <= 0) {
+      return res.status(500).json({ message: 'Admin session price is not configured' });
     }
+    const adminPhysioRate = Number(pricing?.withManager?.physio) || 0;
+    const commissionPerSession = Number(pricing?.withManager?.manager) || getManagerCommissionPerSessionSync();
+
+    const validated = validateHomePlanInput(
+      { ...req.body, amountPerSession: adminAmount },
+      { excludeAssessmentDate: booking.date },
+    );
+    if (validated.error) return res.status(400).json({ message: validated.error });
 
     try {
       applyHomePlanFields(booking, {
@@ -317,8 +308,8 @@ export async function managerCreatePlan(req, res, next) {
       return res.status(e.statusCode || 400).json({ message: e.message });
     }
 
-    // Snapshot the flat commission so later collections/settlements use the
-    // rate that was in force when this plan was created.
+    booking.physioRatePerSession =
+      Number.isFinite(adminPhysioRate) && adminPhysioRate > 0 ? adminPhysioRate : null;
     booking.managerCommissionPerSession = commissionPerSession;
 
     await booking.save();
@@ -384,18 +375,24 @@ export async function managerAssignPhysio(req, res, next) {
       return res.status(409).json({ message: 'This physiotherapist already has another booking in that time slot' });
     }
 
-    // The discounted patient price must cover the physio's flat rate plus the
-    // manager commission — otherwise settlement could not pay both.
-    const commissionPerSession = getEffectiveManagerCommissionPerSessionSync(booking);
-    const physioRate = Number(physio.pricePerSession);
-    if (booking.amountPerSession && Number.isFinite(physioRate) && physioRate > 0) {
-      const discounted = roundMoney2(
-        Number(booking.amountPerSession) * (1 - (booking.discountPercent || 0) / 100),
-      );
-      if (discounted < physioRate + commissionPerSession) {
-        return res.status(400).json({
-          message: `Patient price ₹${discounted}/session after discount cannot cover this physiotherapist's rate ₹${physioRate} + manager commission ₹${commissionPerSession}. Pick a physiotherapist with a lower rate or revise the plan.`,
-        });
+    // Payouts use admin-configured splits — never the physio's self-set profile rate.
+    if (isTechniqueIssue(booking.issue)) {
+      const includeManager = booking.carePath !== 'technique_direct';
+      const split = getTechniqueSplitSync(booking.issue, 1, { includeManager });
+      booking.physioRatePerSession = split.physioEarning;
+      booking.managerCommissionPerSession = split.managerPerSession;
+    } else {
+      const pricing = getDefaultSessionPricingSync();
+      const adminPhysioRate = Number(pricing?.withManager?.physio);
+      const locked =
+        Number(booking.physioRatePerSession) > 0
+          ? Number(booking.physioRatePerSession)
+          : Number.isFinite(adminPhysioRate) && adminPhysioRate > 0
+            ? adminPhysioRate
+            : null;
+      booking.physioRatePerSession = locked;
+      if (booking.managerCommissionPerSession == null) {
+        booking.managerCommissionPerSession = getEffectiveManagerCommissionPerSessionSync(booking);
       }
     }
 
@@ -403,12 +400,6 @@ export async function managerAssignPhysio(req, res, next) {
     const surchargeMeta = computeDistanceSurcharge(patient?.coordinates, physio.coordinates);
 
     booking.physioId = physioId;
-    // Lock the flat payout rate at assignment time (payout basis at settlement).
-    booking.physioRatePerSession = Number.isFinite(physioRate) && physioRate > 0 ? physioRate : null;
-    // Technique bookings always use Techniques Care manager ₹; home plans keep snapshot.
-    if (isTechniqueIssue(booking.issue) || booking.managerCommissionPerSession == null) {
-      booking.managerCommissionPerSession = commissionPerSession;
-    }
     booking.physioAssignedBy = managerId;
     booking.status = 'accepted';
     booking.sessionStatus = 'scheduled';
