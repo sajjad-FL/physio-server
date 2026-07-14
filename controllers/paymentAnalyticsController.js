@@ -201,7 +201,7 @@ export async function listPhysiosWalletTable(req, res, next) {
     const filter = String(req.query?.filter || 'all');
 
     const wallets = await listAllPhysioWalletsSummary();
-    const pendingReqs = await WithdrawRequest.find({ status: 'pending' })
+    const pendingReqs = await WithdrawRequest.find({ status: 'pending', physioId: { $ne: null } })
       .sort({ requestedAt: 1 })
       .lean();
     const pendingByPhysio = new Map(pendingReqs.map((r) => [String(r.physioId), r]));
