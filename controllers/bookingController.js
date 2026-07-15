@@ -38,6 +38,7 @@ import { applyZoneAndManager } from '../utils/zoneAssign.js';
 import { findActiveManagerCare } from '../utils/activeManagerCare.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
 import { allocateBookingCode } from '../utils/bookingCode.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -66,12 +67,6 @@ const ALLOWED_SERVICE_TYPES = ['online', 'home'];
 
 function defaultBookingAmountRupees() {
   return getDefaultBookingAmountRupeesSync();
-}
-
-function readPagination(query) {
-  const page = Math.max(1, Number(query?.page) || 1);
-  const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
-  return { page, limit, skip: (page - 1) * limit };
 }
 
 function isValidDateString(dateStr) {
@@ -293,9 +288,7 @@ const ADMIN_LIST_STATUSES = ['pending', 'assigned', 'accepted', 'scheduled', 'co
 const ADMIN_PAYMENT_STATUSES = ['pending', 'held', 'released', 'refunded'];
 
 function readAdminBookingsPagination(query) {
-  const page = Math.max(1, Number(query?.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(query?.limit) || 25));
-  return { page, limit, skip: (page - 1) * limit };
+  return readPagination(query, { defaultLimit: 10, maxLimit: 50 });
 }
 
 function escapeRegex(value) {
@@ -394,9 +387,7 @@ export async function listBookings(req, res, next) {
 
     return res.json({
       data: list,
-      total,
-      page,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
+      ...paginationMeta({ page, limit, total }),
     });
   } catch (err) {
     next(err);
@@ -411,8 +402,44 @@ export async function listMyBookings(req, res, next) {
     }
 
     const { page, limit, skip } = readPagination(req.query);
+    const filter = { userId };
+    const today = todayYMDLocal();
+    const dateMode = String(req.query?.date || 'all');
+    let from = '';
+    let to = '';
+    if (dateMode === 'today') from = to = today;
+    if (dateMode === 'upcoming') from = today;
+    if (dateMode === 'past') to = today;
+    if (dateMode === 'range') {
+      from = String(req.query?.dateFrom || '');
+      to = String(req.query?.dateTo || '');
+    }
+    if (from || to) {
+      const range = {};
+      if (from) range.$gte = from;
+      if (to) range[dateMode === 'past' ? '$lt' : '$lte'] = to;
+      filter.$or = [{ date: range }, { schedule: { $elemMatch: { date: range } } }];
+    }
+
+    const search = String(req.query?.search || '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      const physioIds = await Physiotherapist.find({
+        $or: [{ name: rx }, { specialization: rx }, { phone: rx }],
+      }).distinct('_id');
+      const searchFilter = {
+        $or: [
+          { issue: rx },
+          { serviceType: rx },
+          ...(physioIds.length ? [{ physioId: { $in: physioIds } }] : []),
+        ],
+      };
+      filter.$and = [...(filter.$and || []), searchFilter];
+    }
+
     const [list, total] = await Promise.all([
-      Booking.find({ userId })
+      Booking.find(filter)
       .populate('userId', 'name phone location coordinates pincode')
       .populate('managerId', 'name phone')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
@@ -420,14 +447,12 @@ export async function listMyBookings(req, res, next) {
       .skip(skip)
       .limit(limit)
       .lean(),
-      Booking.countDocuments({ userId }),
+      Booking.countDocuments(filter),
     ]);
 
     return res.json({
       data: list,
-      total,
-      page,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
+      ...paginationMeta({ page, limit, total }),
     });
   } catch (err) {
     next(err);
@@ -615,7 +640,15 @@ export async function updateBooking(req, res, next) {
       const subtotal = amountPerSession * sessionsCount;
       const discounted = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
       const totalAmount = Math.round((discounted + surchargeMeta.distanceSurchargeAmount + Number.EPSILON) * 100) / 100;
-      const split = computeMarketplaceSplit(totalAmount, sessionsCount);
+      const techniqueDirect =
+        prev.carePath === 'technique_direct' && isTechniqueIssue(prev.issue);
+      const configuredTechniqueSplit = techniqueDirect
+        ? getTechniqueSplitSync(prev.issue, sessionsCount, { includeManager: false })
+        : null;
+      const split = configuredTechniqueSplit || computeMarketplaceSplit(totalAmount, sessionsCount);
+      const platformCommission = techniqueDirect
+        ? Math.min(totalAmount, split.commission)
+        : split.commission;
 
       updates.amountPerSession = amountPerSession;
       updates.distanceKmAtAssign = surchargeMeta.distanceKmAtAssign;
@@ -624,9 +657,24 @@ export async function updateBooking(req, res, next) {
       updates.distanceSurchargeAmount = surchargeMeta.distanceSurchargeAmount;
       updates.totalAmount = totalAmount;
       updates.amountPaise = Math.round(totalAmount * 100);
-      updates['payment.amount'] = split.amount;
-      updates['payment.commission'] = split.commission;
-      updates['payment.physioEarning'] = split.physioEarning;
+      updates['payment.amount'] = techniqueDirect ? totalAmount : split.amount;
+      updates['payment.commission'] = platformCommission;
+      updates['payment.physioEarning'] = techniqueDirect
+        ? Math.max(0, totalAmount - platformCommission)
+        : split.physioEarning;
+      if (techniqueDirect) {
+        updates.physioRatePerSession = Math.max(
+          0,
+          (totalAmount - platformCommission) / sessionsCount,
+        );
+        updates.managerCommissionPerSession = 0;
+      }
+    }
+
+    if (updates.physioId && prev.carePath === 'technique_direct') {
+      updates.planStatus = 'live';
+      updates.homePlanPaymentMode = 'online';
+      updates.homePlanBillingType = 'full';
     }
 
     if (Object.keys(updates).length === 0) {

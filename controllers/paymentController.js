@@ -123,7 +123,18 @@ export async function verifyPayment(req, res, next) {
 
     const rupees = bookingAmountRupees(booking);
     const sessions = Math.max(1, Number(booking.sessions) || 1);
-    const split = computeMarketplaceSplit(rupees > 0 ? rupees : amountPaise / 100, sessions);
+    const gross = rupees > 0 ? rupees : amountPaise / 100;
+    const lockedTechniqueSplit =
+      booking.carePath === 'technique_direct' &&
+      Number(booking.payment?.amount) > 0 &&
+      Number(booking.payment?.commission) >= 0;
+    const split = lockedTechniqueSplit
+      ? {
+          amount: gross,
+          commission: Math.min(gross, Number(booking.payment.commission)),
+          physioEarning: Math.max(0, gross - Number(booking.payment.commission)),
+        }
+      : computeMarketplaceSplit(gross, sessions);
 
     const updateFields = {
       $set: {

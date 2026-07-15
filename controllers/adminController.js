@@ -10,12 +10,7 @@ import Payment from '../models/Payment.js';
 import { listAllPhysioWalletsSummary } from '../utils/ledgerBalance.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { postOnlineRefundDebit } from '../services/ledger.js';
-
-function readPagination(query) {
-  const page = Math.max(1, Number(query?.page) || 1);
-  const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
-  return { page, limit, skip: (page - 1) * limit };
-}
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -65,11 +60,14 @@ export async function getAdminNavCounts(_req, res, next) {
 
 export async function listPhysioVerifications(req, res, next) {
   try {
-    const list = await Physiotherapist.find({ verificationStatus: { $ne: 'approved' } })
-      .sort({ updatedAt: -1 })
-      .lean();
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
+    const filter = { verificationStatus: { $ne: 'approved' } };
+    const [data, total] = await Promise.all([
+      Physiotherapist.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
+      Physiotherapist.countDocuments(filter),
+    ]);
 
-    return res.json(list);
+    return res.json({ data, ...paginationMeta({ page, limit, total }) });
   } catch (err) {
     next(err);
   }

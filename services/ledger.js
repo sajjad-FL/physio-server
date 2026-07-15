@@ -17,6 +17,21 @@ function splitFromBooking(booking) {
 }
 
 function splitFromAmount(amountRupees, booking, payment) {
+  if (
+    booking?.carePath === 'technique_direct' &&
+    Number(booking.payment?.amount) > 0 &&
+    Number(booking.payment?.commission) >= 0
+  ) {
+    const gross = roundMoney2(Math.max(0, Number(amountRupees) || 0));
+    const commissionRate =
+      Number(booking.payment.commission) / Number(booking.payment.amount);
+    const commission = roundMoney2(Math.min(gross, gross * commissionRate));
+    return {
+      gross,
+      commission,
+      physioEarning: roundMoney2(Math.max(0, gross - commission)),
+    };
+  }
   const sessionCount = inferCommissionSessionCount(amountRupees, booking, payment);
   const { amount, commission, physioEarning } = computeMarketplaceSplit(amountRupees, sessionCount);
   return { gross: amount, commission, physioEarning };

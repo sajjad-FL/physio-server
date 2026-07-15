@@ -7,6 +7,7 @@ import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
 import { recomputeBookingPaymentRollup } from '../utils/installmentRollup.js';
 import { distributeSettlementBatch, previewDistribution } from '../services/managerSettlement.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -98,22 +99,40 @@ export async function getManagerLedgerAdmin(req, res, next) {
       return res.status(404).json({ message: 'Care manager not found' });
     }
 
-    const entries = await ManagerLedgerEntry.find({ managerId })
-      .sort({ createdAt: -1 })
-      .populate(LEDGER_BOOKING_POPULATE)
-      .lean();
+    const status = String(req.query?.status || '').trim();
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
+    const filter = { managerId };
+    if (status) filter.status = status;
+
+    const [entries, total] = await Promise.all([
+      ManagerLedgerEntry.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate(LEDGER_BOOKING_POPULATE)
+        .lean(),
+      ManagerLedgerEntry.countDocuments(filter),
+    ]);
 
     const shapedEntries = entries.map(shapeLedgerEntry);
 
-    const openTotal = shapedEntries
-      .filter((e) => e.status === 'open' && e.direction === 'credit')
-      .reduce((s, e) => s + Number(e.amount || 0), 0);
+    const openTotalAgg = await ManagerLedgerEntry.aggregate([
+      {
+        $match: {
+          managerId: new mongoose.Types.ObjectId(String(managerId)),
+          status: 'open',
+          direction: 'credit',
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const openTotal = roundMoney2(openTotalAgg[0]?.total || 0);
 
-    // Commission owed to this manager: accrues on open/batched collections,
-    // becomes "settled" (withdrawable) once the cash hand-off is settled.
-    const pendingCommissionEntries = shapedEntries.filter(
-      (e) => (e.status === 'open' || e.status === 'batched') && e.direction === 'credit',
-    );
+    const pendingCommissionEntries = await ManagerLedgerEntry.find({
+      managerId,
+      status: { $in: ['open', 'batched'] },
+      direction: 'credit',
+    }).lean();
     const pendingPreview = await previewDistribution(pendingCommissionEntries);
     const settledCommission = await sumSettledCommission(managerId);
 
@@ -126,10 +145,11 @@ export async function getManagerLedgerAdmin(req, res, next) {
     return res.json({
       manager,
       entries: shapedEntries,
-      openTotal: roundMoney2(openTotal),
+      openTotal,
       pendingCommission: pendingPreview.managerTotal,
       settledCommission,
       batches,
+      ...paginationMeta({ page, limit, total }),
     });
   } catch (err) {
     next(err);
@@ -228,19 +248,52 @@ export async function settleBatch(req, res, next) {
 
 export async function listSettlementBatches(req, res, next) {
   try {
-    const { status } = req.query || {};
+    const { status, search, dateFrom, dateTo, sort } = req.query || {};
     const filter = {};
     if (status) filter.status = String(status);
 
-    const rawBatches = await ManagerSettlementBatch.find(filter)
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
+    let rawBatches = await ManagerSettlementBatch.find(filter)
       .sort({ createdAt: -1 })
       .populate('managerId', 'name phone')
-      .limit(100)
       .lean();
 
-    const batches = await shapeSettlementBatches(rawBatches);
+    const q = String(search || '').trim().toLowerCase();
+    if (q) {
+      rawBatches = rawBatches.filter((b) => {
+        const name = String(b.managerId?.name || '').toLowerCase();
+        const phone = String(b.managerId?.phone || '');
+        return name.includes(q) || phone.includes(q);
+      });
+    }
 
-    return res.json({ batches });
+    if (dateFrom || dateTo) {
+      const from = dateFrom ? new Date(`${String(dateFrom)}T00:00:00`) : null;
+      const to = dateTo ? new Date(`${String(dateTo)}T23:59:59.999`) : null;
+      rawBatches = rawBatches.filter((b) => {
+        const d = new Date(b.settledAt || b.distributedAt || b.createdAt);
+        if (Number.isNaN(d.getTime())) return false;
+        if (from && d < from) return false;
+        if (to && d > to) return false;
+        return true;
+      });
+    }
+
+    if (sort === 'oldest') {
+      rawBatches.sort((a, b) => new Date(a.settledAt || a.createdAt) - new Date(b.settledAt || b.createdAt));
+    } else if (sort === 'amount-high') {
+      rawBatches.sort((a, b) => Number(b.expectedAmount || 0) - Number(a.expectedAmount || 0));
+    } else if (sort === 'amount-low') {
+      rawBatches.sort((a, b) => Number(a.expectedAmount || 0) - Number(b.expectedAmount || 0));
+    } else {
+      rawBatches.sort((a, b) => new Date(b.settledAt || b.createdAt) - new Date(a.settledAt || a.createdAt));
+    }
+
+    const total = rawBatches.length;
+    const pageRows = rawBatches.slice(skip, skip + limit);
+    const batches = await shapeSettlementBatches(pageRows);
+
+    return res.json({ batches, data: batches, ...paginationMeta({ page, limit, total }) });
   } catch (err) {
     next(err);
   }

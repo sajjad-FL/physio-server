@@ -12,6 +12,7 @@ import {
 } from '../utils/ledgerBalance.js';
 import { resolveWithdrawRequestPayout } from '../utils/payoutUpi.js';
 import { computeEntryShares } from '../services/managerSettlement.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 /**
  * Platform fee actually realized:
@@ -195,8 +196,7 @@ export async function postSettleCommission(req, res, next) {
  */
 export async function listPhysiosWalletTable(req, res, next) {
   try {
-    const page = Math.max(1, Number(req.query?.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(req.query?.limit) || 20));
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
     const search = String(req.query?.search || '').trim().toLowerCase();
     const filter = String(req.query?.filter || 'all');
 
@@ -256,11 +256,9 @@ export async function listPhysiosWalletTable(req, res, next) {
     });
 
     const total = rows.length;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    const skip = (page - 1) * limit;
     const data = rows.slice(skip, skip + limit);
 
-    return res.json({ data, total, page, totalPages });
+    return res.json({ data, ...paginationMeta({ page, limit, total }) });
   } catch (err) {
     next(err);
   }

@@ -6,6 +6,7 @@ import Physiotherapist from '../models/Physiotherapist.js';
 import { getComputedWallet, computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
 import { roundMoney2 } from '../utils/marketplacePayment.js';
 import { resolveWithdrawRequestPayout } from '../utils/payoutUpi.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 const PAYEE_PROFILE_FIELDS = 'name phone payoutUpiId payoutDisplayName';
 const PHYSIO_PROFILE_FIELDS = 'name phone specialization payoutUpiId payoutDisplayName';
@@ -189,19 +190,52 @@ export async function createManagerWithdrawRequest(req, res, next) {
 export async function listWithdrawRequests(req, res, next) {
   try {
     const payee = String(req.query?.payee || '').trim();
+    const status = String(req.query?.status || '').trim();
+    const search = String(req.query?.search || '').trim();
+    const dateFrom = String(req.query?.dateFrom || '').trim();
+    const dateTo = String(req.query?.dateTo || '').trim();
+    const amountMin = Number(req.query?.amountMin);
+    const amountMax = Number(req.query?.amountMax);
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
+
     const filter = {};
     if (payee === 'manager') filter.managerId = { $ne: null };
     else if (payee === 'physio') filter.physioId = { $ne: null };
+    if (['pending', 'approved', 'rejected'].includes(status)) filter.status = status;
 
-    const list = await WithdrawRequest.find(filter)
+    if (dateFrom || dateTo) {
+      filter.requestedAt = {};
+      if (dateFrom) filter.requestedAt.$gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo) filter.requestedAt.$lte = new Date(`${dateTo}T23:59:59.999`);
+    }
+
+    if (Number.isFinite(amountMin) && req.query?.amountMin !== '') {
+      filter.amount = { ...(filter.amount || {}), $gte: amountMin };
+    }
+    if (Number.isFinite(amountMax) && req.query?.amountMax !== '') {
+      filter.amount = { ...(filter.amount || {}), $lte: amountMax };
+    }
+
+    let list = await WithdrawRequest.find(filter)
       .populate('physioId', PHYSIO_PROFILE_FIELDS)
       .populate('managerId', PAYEE_PROFILE_FIELDS)
       .sort({ requestedAt: -1 })
-      .lean()
-      .limit(200);
+      .lean();
 
-    const enriched = await Promise.all(list.map((row) => enrichWithdrawRow(row, { backfillPending: true })));
-    return res.json(enriched);
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter((row) => {
+        const name = String(row.managerId?.name || row.physioId?.name || '').toLowerCase();
+        const phone = String(row.managerId?.phone || row.physioId?.phone || '');
+        const upi = String(row.payoutUpiId || '').toLowerCase();
+        return name.includes(q) || phone.includes(q) || upi.includes(q);
+      });
+    }
+
+    const total = list.length;
+    const pageRows = list.slice(skip, skip + limit);
+    const data = await Promise.all(pageRows.map((row) => enrichWithdrawRow(row, { backfillPending: true })));
+    return res.json({ data, ...paginationMeta({ page, limit, total }) });
   } catch (err) {
     next(err);
   }

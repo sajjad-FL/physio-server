@@ -12,6 +12,7 @@ import {
   deriveBookingPaymentSummary,
 } from '../utils/installmentRollup.js';
 import { getRequiredPctForSession } from '../constants/planMilestones.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -19,12 +20,6 @@ function roundMoney2(n) {
 
 const PHYSIO_SLOT_CONFLICT_MSG =
   'You already have another booking in that time slot. Please ask admin to reassign this booking or reschedule one of them.';
-
-function readPagination(query) {
-  const page = Math.max(1, Number(query?.page) || 1);
-  const limit = Math.min(50, Math.max(1, Number(query?.limit) || 10));
-  return { page, limit, skip: (page - 1) * limit };
-}
 
 export async function getMe(req, res, next) {
   try {
@@ -76,22 +71,100 @@ export async function listMyBookings(req, res, next) {
     const physioId = req.physio?.id;
     const { page, limit, skip } = readPagination(req.query);
     const query = { physioId };
-    const [list, total] = await Promise.all([
-      Booking.find(query)
+    const and = [];
+    const today = new Date().toISOString().slice(0, 10);
+    const status = String(req.query?.status || 'all');
+    const service = String(req.query?.service || 'all');
+    const date = String(req.query?.date || 'all');
+    const workflow = String(req.query?.workflow || 'all');
+    const sort = String(req.query?.sort || 'latest');
+    const calendarStart = String(req.query?.calendarStart || '');
+    const calendarEnd = String(req.query?.calendarEnd || '');
+    const calendarMode = /^\d{4}-\d{2}-\d{2}$/.test(calendarStart) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(calendarEnd);
+
+    if (status === 'scheduled') query.sessionStatus = { $ne: 'completed' };
+    if (status === 'completed') query.sessionStatus = 'completed';
+    if (status === 'rescheduled') query.rescheduled = true;
+    if (['online', 'home'].includes(service)) query.serviceType = service;
+
+    if (date === 'today') query.date = today;
+    if (date === 'upcoming') query.date = { $gt: today };
+    if (date === 'past') query.date = { $lt: today };
+
+    if (workflow === 'waiting') {
+      query.planStatus = { $in: ['awaiting_consent', 'proposed'] };
+    } else if (workflow === 'action') {
+      and.push({
+        $or: [
+          { managerId: null, status: 'assigned' },
+          {
+            managerId: null,
+            serviceType: 'home',
+            status: { $in: ['accepted', 'scheduled'] },
+            planStatus: { $in: [null, 'requested', 'rejected', 'draft'] },
+          },
+          { schedule: { $elemMatch: { status: 'scheduled', date: { $lte: today } } } },
+        ],
+      });
+    } else if (workflow === 'active') {
+      and.push({
+        $or: [
+          { planStatus: { $in: ['live', 'approved'] }, sessionStatus: { $ne: 'completed' } },
+          { workflowStatus: { $in: ['payment_recorded', 'in_treatment'] } },
+          {
+            managerId: null,
+            status: { $in: ['accepted', 'scheduled'] },
+            sessionStatus: { $ne: 'completed' },
+          },
+        ],
+      });
+    }
+
+    const search = String(req.query?.search || '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      const userIds = await User.find({ $or: [{ name: rx }, { phone: rx }] }).distinct('_id');
+      and.push({
+        $or: [
+          { issue: rx },
+          { bookingCode: rx },
+          ...(userIds.length ? [{ userId: { $in: userIds } }] : []),
+        ],
+      });
+    }
+
+    if (calendarMode) {
+      and.push({
+        $or: [
+          { date: { $gte: calendarStart, $lte: calendarEnd } },
+          { schedule: { $elemMatch: { date: { $gte: calendarStart, $lte: calendarEnd } } } },
+        ],
+      });
+    }
+    if (and.length) query.$and = and;
+
+    const sortSpec =
+      sort === 'oldest'
+        ? { createdAt: 1 }
+        : sort === 'priority'
+          ? { date: 1, updatedAt: -1 }
+          : { createdAt: -1 };
+    const find = Booking.find(query)
       .populate('userId', 'name phone location coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
+      .sort(sortSpec);
+    if (!calendarMode) find.skip(skip).limit(limit);
+
+    const [list, total] = await Promise.all([
+      find.lean(),
       Booking.countDocuments(query),
     ]);
 
     return res.json({
       data: list,
-      total,
-      page,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
+      ...paginationMeta({ page: calendarMode ? 1 : page, limit: calendarMode ? Math.max(1, total) : limit, total }),
     });
   } catch (err) {
     next(err);

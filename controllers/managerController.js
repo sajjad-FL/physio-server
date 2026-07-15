@@ -37,6 +37,7 @@ import {
 } from '../utils/slotCapacity.js';
 import { allocateBookingCode } from '../utils/bookingCode.js';
 import { normalizePincode } from '../utils/pincode.js';
+import { readPagination, paginationMeta } from '../utils/pagination.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -181,21 +182,62 @@ export async function listManagerBookings(req, res, next) {
     const managerId = req.user?.id;
     if (!managerId) return res.status(401).json({ message: 'Unauthorized' });
 
-    const { page = 1, limit = 20, workflowStatus } = req.query || {};
-    const skip = (Math.max(1, Number(page)) - 1) * Math.min(50, Math.max(1, Number(limit)));
-    const take = Math.min(50, Math.max(1, Number(limit)));
+    const { page, limit, skip } = readPagination(req.query);
+    const { workflowStatus } = req.query || {};
 
     const filter = { managerId, serviceType: 'home' };
     if (workflowStatus) filter.workflowStatus = String(workflowStatus);
+    const workflow = String(req.query?.workflow || 'all');
+    if (workflow === 'waiting') {
+      filter.workflowStatus = 'awaiting_patient_consent';
+    } else if (workflow === 'action') {
+      filter.workflowStatus = {
+        $in: ['manager_assigned', 'assessment_done', 'plan_live', 'physio_assigned', 'payment_recorded'],
+      };
+    } else if (workflow === 'active') {
+      filter.workflowStatus = { $in: ['payment_recorded', 'in_treatment', 'completed'] };
+    }
+
+    const today = todayYMDLocal();
+    const date = String(req.query?.date || 'all');
+    if (date === 'today') filter.date = today;
+    if (date === 'upcoming') filter.date = { $gt: today };
+    if (date === 'past') filter.date = { $lt: today };
+
+    const search = String(req.query?.search || '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      const userIds = await User.find({
+        $or: [{ name: rx }, { phone: rx }, { location: rx }],
+      }).distinct('_id');
+      filter.$or = [
+        { issue: rx },
+        { bookingCode: rx },
+        { pincode: rx },
+        ...(userIds.length ? [{ userId: { $in: userIds } }] : []),
+      ];
+      const seq = Number(search.replace(/^#/, ''));
+      if (Number.isInteger(seq) && seq > 0) filter.$or.push({ bookingSeq: seq });
+    }
+
+    const sort = String(req.query?.sort || 'latest');
+    const sortSpec =
+      sort === 'oldest'
+        ? { createdAt: 1 }
+        : sort === 'priority'
+          ? { date: 1, updatedAt: -1 }
+          : { createdAt: -1 };
 
     const [items, total] = await Promise.all([
-      populateBooking(Booking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(take)),
+      populateBooking(Booking.find(filter).sort(sortSpec).skip(skip).limit(limit)),
       Booking.countDocuments(filter),
     ]);
 
     const enriched = await attachLightPaymentSummaries(items);
+    const meta = paginationMeta({ page, limit, total });
 
-    return res.json({ items: enriched, total, page: Number(page), limit: take });
+    return res.json({ items: enriched, data: enriched, ...meta });
   } catch (err) {
     next(err);
   }
@@ -646,18 +688,41 @@ export async function listManagerLedger(req, res, next) {
   try {
     const managerId = req.user?.id;
     const status = req.query?.status ? String(req.query.status) : undefined;
+    const dateFrom = String(req.query?.dateFrom || '').trim();
+    const dateTo = String(req.query?.dateTo || '').trim();
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
     const filter = { managerId };
     if (status) filter.status = status;
+    if (dateFrom || dateTo) {
+      filter.collectedAt = {};
+      if (dateFrom) filter.collectedAt.$gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo) filter.collectedAt.$lte = new Date(`${dateTo}T23:59:59.999`);
+    }
 
-    const entries = await ManagerLedgerEntry.find(filter)
-      .sort({ createdAt: -1 })
-      .populate({
-        path: 'bookingId',
-        select:
-          'issue carePath date timeSlot totalAmount sessions schedule userId bookingCode bookingSeq managerCommissionPerSession',
-        populate: { path: 'userId', select: 'name phone' },
-      })
-      .lean();
+    const [entries, total, openAgg] = await Promise.all([
+      ManagerLedgerEntry.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate({
+          path: 'bookingId',
+          select:
+            'issue carePath date timeSlot totalAmount sessions schedule userId bookingCode bookingSeq managerCommissionPerSession',
+          populate: { path: 'userId', select: 'name phone' },
+        })
+        .lean(),
+      ManagerLedgerEntry.countDocuments(filter),
+      ManagerLedgerEntry.aggregate([
+        {
+          $match: {
+            managerId: new mongoose.Types.ObjectId(String(managerId)),
+            status: 'open',
+            direction: 'credit',
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+    ]);
 
     const commissionFixes = [];
     const shaped = entries.map((e) => {
@@ -666,7 +731,6 @@ export async function listManagerLedger(req, res, next) {
         booking && typeof booking.userId === 'object' ? booking.userId?.name : null;
 
       let managerCommissionAmount = e.managerCommissionAmount;
-      // Open/batched technique rows may still store Defaults-based cut — show Techniques rate.
       if (
         booking &&
         isTechniqueIssue(booking.issue) &&
@@ -716,11 +780,12 @@ export async function listManagerLedger(req, res, next) {
       );
     }
 
-    const openTotal = entries
-      .filter((e) => e.status === 'open' && e.direction === 'credit')
-      .reduce((s, e) => s + Number(e.amount || 0), 0);
-
-    return res.json({ entries: shaped, openTotal: roundMoney2(openTotal) });
+    return res.json({
+      entries: shaped,
+      data: shaped,
+      openTotal: roundMoney2(openAgg[0]?.total || 0),
+      ...paginationMeta({ page, limit, total }),
+    });
   } catch (err) {
     next(err);
   }
@@ -829,18 +894,27 @@ export async function getManagerWallet(req, res, next) {
 export async function listManagerWalletTransactions(req, res, next) {
   try {
     const managerId = req.user?.id;
-    const page = Math.max(1, Number(req.query?.page) || 1);
-    const limit = Math.min(50, Math.max(1, Number(req.query?.limit) || 20));
+    const { page, limit, skip } = readPagination(req.query, { defaultLimit: 10, maxLimit: 50 });
+    const type = String(req.query?.type || '').trim();
+    const dateFrom = String(req.query?.dateFrom || '').trim();
+    const dateTo = String(req.query?.dateTo || '').trim();
 
     const filter = {
       userId: managerId,
       type: { $in: ['manager_commission', 'manager_withdrawal'] },
       status: 'posted',
     };
+    if (type === 'manager_commission' || type === 'manager_withdrawal') filter.type = type;
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(`${dateFrom}T00:00:00`);
+      if (dateTo) filter.createdAt.$lte = new Date(`${dateTo}T23:59:59.999`);
+    }
+
     const [rows, total] = await Promise.all([
       Transaction.find(filter)
         .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
+        .skip(skip)
         .limit(limit)
         .populate({
           path: 'bookingId',
@@ -851,7 +925,12 @@ export async function listManagerWalletTransactions(req, res, next) {
       Transaction.countDocuments(filter),
     ]);
 
-    return res.json({ transactions: rows, total, page, limit });
+    const meta = paginationMeta({ page, limit, total });
+    return res.json({
+      transactions: rows,
+      data: rows,
+      ...meta,
+    });
   } catch (err) {
     next(err);
   }
