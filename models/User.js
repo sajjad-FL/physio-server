@@ -49,14 +49,27 @@ const userSchema = new mongoose.Schema(
     hasPasswordLogin: { type: Boolean, default: false },
     role: {
       type: String,
-      enum: ['user', 'physio', 'admin', 'care_manager'],
+      enum: ['user', 'physio', 'admin', 'care_manager', 'clinic_staff'],
       default: 'user',
     },
     /** @deprecated Legacy multi-role array — run scripts/migrateUserRoles.js and omit on new writes */
     roles: {
       type: [String],
-      enum: ['user', 'physio', 'admin', 'care_manager'],
+      enum: ['user', 'physio', 'admin', 'care_manager', 'clinic_staff'],
       required: false,
+    },
+    /** Set when user is clinic_staff — primary clinic membership. */
+    clinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
+      default: null,
+    },
+    /** Patient registered by clinic staff (walk-in / no app). Links them to that clinic roster. */
+    registeredByClinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
+      default: null,
+      index: true,
     },
     physioId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -4,10 +4,12 @@ const PHYSIO_LEDGER_TYPES = ['online', 'offline', 'settlement', 'withdrawal'];
 const PATIENT_PLATFORM_TYPES = ['referral_credit', 'referral_signup_bonus', 'wallet_discount'];
 /** Care-manager commission economy: credit at settlement, debit at payout. userId = manager's User id. */
 const MANAGER_LEDGER_TYPES = ['manager_commission', 'manager_withdrawal'];
+/** Clinic commission economy: credit at settlement, debit at payout. userId = clinic wallet user. */
+const CLINIC_LEDGER_TYPES = ['clinic_commission', 'clinic_withdrawal'];
 
 /**
  * Ledger lines — balances are derived: sum(credits) − sum(debits) on posted rows.
- * Types: online | offline | settlement | withdrawal | referral_credit | referral_signup_bonus | wallet_discount | manager_commission | manager_withdrawal
+ * Types: online | offline | settlement | withdrawal | referral_credit | referral_signup_bonus | wallet_discount | manager_commission | manager_withdrawal | clinic_commission | clinic_withdrawal
  */
 const transactionSchema = new mongoose.Schema(
   {
@@ -31,7 +33,12 @@ const transactionSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: [...PHYSIO_LEDGER_TYPES, ...PATIENT_PLATFORM_TYPES, ...MANAGER_LEDGER_TYPES],
+      enum: [
+        ...PHYSIO_LEDGER_TYPES,
+        ...PATIENT_PLATFORM_TYPES,
+        ...MANAGER_LEDGER_TYPES,
+        ...CLINIC_LEDGER_TYPES,
+      ],
       required: true,
     },
     /** INR — amount for this leg (gross, commission, settlement payment, or reversal). */
@@ -66,6 +73,9 @@ transactionSchema.pre('validate', function requirePhysioForPhysioLedger(next) {
   }
   if (MANAGER_LEDGER_TYPES.includes(this.type) && !this.userId) {
     this.invalidate('userId', 'userId is required for manager ledger types');
+  }
+  if (CLINIC_LEDGER_TYPES.includes(this.type) && !this.userId) {
+    this.invalidate('userId', 'userId is required for clinic ledger types');
   }
   next();
 });

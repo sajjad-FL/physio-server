@@ -3,7 +3,11 @@ import WithdrawRequest from '../models/WithdrawRequest.js';
 import Transaction from '../models/Transaction.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
-import { getComputedWallet, computeManagerCommissionBalance } from '../utils/ledgerBalance.js';
+import {
+  getComputedWallet,
+  computeManagerCommissionBalance,
+  computeClinicCommissionBalance,
+} from '../utils/ledgerBalance.js';
 import { roundMoney2 } from '../utils/marketplacePayment.js';
 import { resolveWithdrawRequestPayout } from '../utils/payoutUpi.js';
 import { readPagination, paginationMeta } from '../utils/pagination.js';
@@ -264,6 +268,7 @@ export async function updateWithdrawStatus(req, res, next) {
     }
 
     const isManager = Boolean(reqDoc.managerId);
+    const isClinic = Boolean(reqDoc.clinicStaffUserId);
 
     if (status === 'rejected') {
       const updated = await WithdrawRequest.findByIdAndUpdate(
@@ -273,6 +278,7 @@ export async function updateWithdrawStatus(req, res, next) {
       )
         .populate('physioId', 'name phone')
         .populate('managerId', 'name phone')
+        .populate('clinicStaffUserId', 'name phone')
         .lean();
       return res.json(updated);
     }
@@ -282,6 +288,13 @@ export async function updateWithdrawStatus(req, res, next) {
       if (reqDoc.amount > balance.availableBalance + 1e-6) {
         return res.status(400).json({
           message: `Insufficient settled commission to approve (${formatInr(balance.availableBalance)} available)`,
+        });
+      }
+    } else if (isClinic) {
+      const balance = await computeClinicCommissionBalance(reqDoc.clinicStaffUserId);
+      if (reqDoc.amount > balance.availableBalance + 1e-6) {
+        return res.status(400).json({
+          message: `Insufficient settled clinic commission to approve (${formatInr(balance.availableBalance)} available)`,
         });
       }
     } else {
@@ -317,13 +330,30 @@ export async function updateWithdrawStatus(req, res, next) {
     const payoutUpiId = String(claimed.payoutUpiId || payout.payoutUpiId || '').trim();
 
     try {
-      await Transaction.create(
-        isManager
+      const txDoc = isManager
+        ? {
+            userId: reqDoc.managerId,
+            physioId: null,
+            bookingId: null,
+            type: 'manager_withdrawal',
+            direction: 'debit',
+            totalAmount: reqDoc.amount,
+            commission: 0,
+            physioEarning: 0,
+            status: 'posted',
+            meta: {
+              withdrawRequestId: String(reqDoc._id),
+              note: note || 'Manager commission payout',
+              payoutReference,
+              payoutUpiId,
+            },
+          }
+        : isClinic
           ? {
-              userId: reqDoc.managerId,
+              userId: reqDoc.clinicStaffUserId,
               physioId: null,
               bookingId: null,
-              type: 'manager_withdrawal',
+              type: 'clinic_withdrawal',
               direction: 'debit',
               totalAmount: reqDoc.amount,
               commission: 0,
@@ -331,9 +361,10 @@ export async function updateWithdrawStatus(req, res, next) {
               status: 'posted',
               meta: {
                 withdrawRequestId: String(reqDoc._id),
-                note: note || 'Manager commission payout',
+                note: note || 'Clinic commission payout',
                 payoutReference,
                 payoutUpiId,
+                clinicId: reqDoc.clinicId ? String(reqDoc.clinicId) : undefined,
               },
             }
           : {
@@ -351,8 +382,8 @@ export async function updateWithdrawStatus(req, res, next) {
                 payoutReference,
                 payoutUpiId,
               },
-            }
-      );
+            };
+      await Transaction.create(txDoc);
     } catch (txErr) {
       await WithdrawRequest.findByIdAndUpdate(id, {
         $set: { status: 'pending', processedAt: null, payoutReference: '' },
@@ -363,6 +394,7 @@ export async function updateWithdrawStatus(req, res, next) {
     const out = await WithdrawRequest.findById(id)
       .populate('physioId', 'name phone')
       .populate('managerId', 'name phone')
+      .populate('clinicStaffUserId', 'name phone')
       .lean();
     return res.json(out);
   } catch (err) {

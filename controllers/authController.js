@@ -63,13 +63,14 @@ function buildOtpSendResponse(message, otp) {
   return { message };
 }
 
-async function deliverOtpSms(normalizedPhone, otp, logLabel) {
+/** All OTP sends (signup + forgot-password) go through AuthKey WhatsApp. */
+async function deliverOtpWhatsApp(normalizedPhone, otp, logLabel) {
   if (DEBUG_OTP) {
     console.log(`[debug][${logLabel}] ${normalizedPhone} -> ${otp}`);
     return;
   }
   if (!isAuthKeyConfigured()) {
-    throw new Error('SMS OTP is not configured on this server.');
+    throw new Error('WhatsApp OTP is not configured on this server.');
   }
   await sendAuthKeyOtp({ mobile: normalizedPhone, otp });
 }
@@ -93,14 +94,14 @@ export async function sendSignupOtp(req, res, next) {
     });
 
     try {
-      await deliverOtpSms(normalizedPhone, otp, 'signup-otp');
+      await deliverOtpWhatsApp(normalizedPhone, otp, 'signup-otp');
     } catch (e) {
       return res.status(502).json({ message: e.message || 'Could not send verification code' });
     }
 
     const message = DEBUG_OTP
       ? `Verification code issued (DEBUG_OTP). Enter the ${OTP_LENGTH}-digit code below.`
-      : `A ${OTP_LENGTH}-digit verification code was sent to this number. Enter it below within a few minutes.`;
+      : `A ${OTP_LENGTH}-digit verification code was sent via WhatsApp. Enter it below within a few minutes.`;
 
     return res.json(buildOtpSendResponse(message, otp));
   } catch (err) {
@@ -368,7 +369,8 @@ export async function loginWithPassword(req, res, next) {
   }
 }
 
-const GENERIC_FORGOT_MSG = 'If an account exists for this number, a verification code has been sent.';
+const GENERIC_FORGOT_MSG =
+  'If an account exists for this number, a verification code has been sent via WhatsApp.';
 
 export async function forgotPassword(req, res, next) {
   try {
@@ -389,7 +391,7 @@ export async function forgotPassword(req, res, next) {
     });
 
     try {
-      await deliverOtpSms(normalizedPhone, otp, 'forgot-password-otp');
+      await deliverOtpWhatsApp(normalizedPhone, otp, 'forgot-password-otp');
     } catch (e) {
       return res.status(502).json({ message: e.message || 'Could not send verification code' });
     }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   createBooking,
   requestHomeBooking,
+  requestClinicBooking,
   requestTechniqueBooking,
   createHomePlan,
   approveHomePlan,
@@ -38,6 +39,7 @@ router.post('/online-checkout/complete', requireAuth, completeOnlineCheckout);
 router.get('/online-checkout/hosted/:sessionId', renderHostedOnlineCheckoutPage);
 router.post('/online-checkout/complete-hosted', completeHostedOnlineCheckout);
 router.post('/request-home', requireAuth, requestHomeBooking);
+router.post('/request-clinic', requireAuth, requestClinicBooking);
 router.post('/request-technique', requireAuth, requestTechniqueBooking);
 router.get('/mine', requireAuth, listMyBookings);
 router.get('/my', requireAuth, listMyBookings);
@@ -47,7 +49,7 @@ router.get(
   '/:id',
   authenticateJwt,
   requireCompleteProfile,
-  requireRoles('user', 'care_manager'),
+  requireRoles('user', 'care_manager', 'clinic_staff'),
   getBookingById
 );
 router.patch(

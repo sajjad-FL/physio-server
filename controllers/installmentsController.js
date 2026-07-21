@@ -12,6 +12,7 @@ import {
   postOfflineInstallmentPair,
 } from '../services/ledger.js';
 import { distributeManagerPhonePePayment } from '../services/managerSettlement.js';
+import { distributeClinicPhonePePayment } from '../services/clinicSettlement.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { isPlanLive } from '../utils/planStatus.js';
@@ -21,6 +22,14 @@ function isManagerPhonePePayment(payment) {
     payment?.mode === 'offline' &&
     payment?.meta?.collectionChannel === 'phonepe_qr' &&
     Boolean(payment?.meta?.managerId)
+  );
+}
+
+function isClinicPhonePePayment(payment) {
+  return (
+    payment?.mode === 'offline' &&
+    payment?.meta?.collectionChannel === 'phonepe_qr' &&
+    Boolean(payment?.meta?.clinicId)
   );
 }
 
@@ -186,7 +195,9 @@ export async function adminVerifyPayment(req, res, next) {
     payment.rejectReason = '';
     await payment.save();
 
-    if (isManagerPhonePePayment(payment)) {
+    if (isClinicPhonePePayment(payment)) {
+      await distributeClinicPhonePePayment(booking, payment);
+    } else if (isManagerPhonePePayment(payment)) {
       await distributeManagerPhonePePayment(booking, payment);
     } else {
       await postOfflineInstallmentPair(booking, payment);

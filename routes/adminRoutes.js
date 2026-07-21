@@ -19,6 +19,7 @@ import {
   rejectPhysioAdmin,
   getAdminNavCounts,
 } from '../controllers/adminController.js';
+import { createStaffPatient } from '../controllers/staffPatientController.js';
 import {
   addAdminBookingSession,
   deleteAdminBookingSession,
@@ -83,11 +84,25 @@ import {
   disputeBatch,
   dedupeManagerLedger,
 } from '../controllers/settlementController.js';
+import {
+  listClinics,
+  createClinic,
+  updateClinic,
+  promoteToClinicStaff,
+  listClinicStaff,
+  adminAssignClinic,
+  getClinicLedgerAdmin,
+  createClinicSettlementBatch,
+  listClinicSettlementBatches,
+  settleClinicBatch,
+  disputeClinicBatch,
+} from '../controllers/clinicAdminController.js';
 
 const router = Router();
 
 router.get('/nav-counts', requireAdmin, getAdminNavCounts);
 router.get('/users', requireAdmin, listAdminUsers);
+router.post('/users', requireAdmin, createStaffPatient);
 router.delete('/users/:id', requireAdmin, deleteAdminUser);
 router.post('/physios/from-user', requireAdmin, createPhysioFromUser);
 router.get('/physios', requireAdmin, listAdminPhysios);
@@ -156,5 +171,17 @@ router.post('/managers/:managerId/settlement-batches', requireAdmin, createSettl
 router.get('/settlement-batches', requireAdmin, listSettlementBatches);
 router.patch('/settlement-batches/:batchId/settle', requireAdmin, settleBatch);
 router.patch('/settlement-batches/:batchId/dispute', requireAdmin, disputeBatch);
+
+router.get('/clinics', requireAdmin, listClinics);
+router.post('/clinics', requireAdmin, createClinic);
+router.patch('/clinics/:id', requireAdmin, updateClinic);
+router.get('/clinic-staff', requireAdmin, listClinicStaff);
+router.post('/clinic-staff/promote', requireAdmin, promoteToClinicStaff);
+router.patch('/bookings/:id/assign-clinic', requireAdmin, adminAssignClinic);
+router.get('/clinics/:clinicId/ledger', requireAdmin, getClinicLedgerAdmin);
+router.post('/clinics/:clinicId/settlement-batches', requireAdmin, createClinicSettlementBatch);
+router.get('/clinic-settlement-batches', requireAdmin, listClinicSettlementBatches);
+router.patch('/clinic-settlement-batches/:batchId/settle', requireAdmin, settleClinicBatch);
+router.patch('/clinic-settlement-batches/:batchId/dispute', requireAdmin, disputeClinicBatch);
 
 export default router;

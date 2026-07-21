@@ -15,7 +15,7 @@ const bookingSchema = new mongoose.Schema(
     issue: { type: String, required: true, trim: true },
     serviceType: {
       type: String,
-      enum: ['online', 'home'],
+      enum: ['online', 'home', 'clinic'],
       default: 'home',
     },
 
@@ -58,7 +58,9 @@ const bookingSchema = new mongoose.Schema(
       enum: [
         'pending_manager_assignment',
         'pending_physio_assignment',
+        'pending_clinic_assignment',
         'manager_assigned',
+        'clinic_assigned',
         'assessment_done',
         'awaiting_patient_consent',
         'plan_live',
@@ -74,10 +76,11 @@ const bookingSchema = new mongoose.Schema(
      * - standard: care-manager home flow
      * - technique_direct: technique booking, no manager (admin assigns physio)
      * - technique_managed: technique booking attached to patient's live-care manager
+     * - clinic_visit: facility visit (direct or manager-referred)
      */
     carePath: {
       type: String,
-      enum: ['standard', 'technique_direct', 'technique_managed'],
+      enum: ['standard', 'technique_direct', 'technique_managed', 'clinic_visit'],
       default: 'standard',
     },
     managerId: {
@@ -85,6 +88,25 @@ const bookingSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    clinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
+      default: null,
+    },
+    /** Who routed the patient to a clinic. */
+    clinicSource: {
+      type: String,
+      enum: ['manager_referred', 'direct', null],
+      default: null,
+    },
+    clinicAssignedAt: { type: Date, default: null },
+    clinicAssignedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    /** Flat clinic commission per session (INR), snapshot at clinic assign / clinic book. */
+    clinicCommissionPerSession: { type: Number, min: 0, default: null },
     zoneId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'ServiceZone',

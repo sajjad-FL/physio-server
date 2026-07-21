@@ -7,6 +7,9 @@ import {
   DEFAULT_DISTANCE_SURCHARGE_PER_KM,
   DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
   DEFAULT_MANAGER_COMMISSION_PER_SESSION,
+  DEFAULT_CLINIC_COMMISSION_PER_SESSION,
+  DEFAULT_CLINIC_MANAGER_COMMISSION_PER_SESSION,
+  DEFAULT_CLINIC_SESSION_TOTAL,
   DEFAULT_PHYSIO_PRICE_PER_SESSION,
   DEFAULT_PLATFORM_COMMISSION_PER_SESSION,
   DEFAULT_PLAN_MILESTONES,
@@ -302,6 +305,87 @@ export function normalizeDefaultSessionPricing(raw, fallback = {}) {
   return { totalAmount, withManager, withoutManager };
 }
 
+function readClinicSplitParts(raw) {
+  return {
+    platform: roundMoney(Math.max(0, Number(raw?.platform) || 0)),
+    clinic: roundMoney(Math.max(0, Number(raw?.clinic) || 0)),
+    manager: roundMoney(Math.max(0, Number(raw?.manager) || 0)),
+  };
+}
+
+function clinicSplitSum(parts) {
+  return roundMoney(parts.platform + parts.clinic + parts.manager);
+}
+
+/**
+ * Normalize clinic dual split:
+ * { totalAmount, withManager: {platform,clinic,manager}, withoutManager: {platform,clinic,manager:0} }
+ */
+export function normalizeClinicSessionPricing(raw, fallback = {}) {
+  const totalFallback =
+    Number(fallback.totalAmount) || DEFAULT_CLINIC_SESSION_TOTAL;
+  const platformFallback = Number.isFinite(Number(fallback.platform))
+    ? Number(fallback.platform)
+    : DEFAULT_PLATFORM_COMMISSION_PER_SESSION;
+  const clinicFallback = Number.isFinite(Number(fallback.clinic))
+    ? Number(fallback.clinic)
+    : DEFAULT_CLINIC_COMMISSION_PER_SESSION;
+  const managerFallback = Number.isFinite(Number(fallback.manager))
+    ? Number(fallback.manager)
+    : DEFAULT_CLINIC_MANAGER_COMMISSION_PER_SESSION;
+
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && (raw.withManager || raw.withoutManager)) {
+    let totalAmount = roundMoney(Number(raw.totalAmount) || 0);
+    let withManager = readClinicSplitParts(raw.withManager || raw);
+    let withoutManager = readClinicSplitParts({
+      ...(raw.withoutManager || {}),
+      manager: 0,
+    });
+    if (totalAmount <= 0) totalAmount = clinicSplitSum(withManager) || roundMoney(totalFallback);
+    if (clinicSplitSum(withManager) <= 0) {
+      withManager = {
+        platform: Math.min(totalAmount, Math.max(0, roundMoney(platformFallback))),
+        clinic: roundMoney(Math.max(0, Math.min(totalAmount, clinicFallback))),
+        manager: 0,
+      };
+      withManager.clinic = roundMoney(
+        Math.max(0, totalAmount - withManager.platform - withManager.manager),
+      );
+    } else if (clinicSplitSum(withManager) !== totalAmount) {
+      totalAmount = clinicSplitSum(withManager);
+    }
+    if (clinicSplitSum(withoutManager) !== totalAmount || withoutManager.manager !== 0) {
+      withoutManager = {
+        platform: roundMoney(withManager.platform + withManager.manager),
+        clinic: withManager.clinic,
+        manager: 0,
+      };
+      if (clinicSplitSum(withoutManager) !== totalAmount) {
+        withoutManager.clinic = roundMoney(Math.max(0, totalAmount - withoutManager.platform));
+      }
+    }
+    return { totalAmount, withManager, withoutManager };
+  }
+
+  const totalAmount = roundMoney(Math.max(0, Number(totalFallback) || 0)) || DEFAULT_CLINIC_SESSION_TOTAL;
+  let platform = roundMoney(Math.max(0, Number(platformFallback) || 0));
+  let clinic = roundMoney(Math.max(0, Number(clinicFallback) || 0));
+  let manager = roundMoney(Math.max(0, Number(managerFallback) || 0));
+  if (clinicSplitSum({ platform, clinic, manager }) !== totalAmount) {
+    clinic = roundMoney(Math.max(0, totalAmount - platform - manager));
+  }
+  const withManager = { platform, clinic, manager };
+  const withoutManager = {
+    platform: roundMoney(platform + manager),
+    clinic,
+    manager: 0,
+  };
+  if (clinicSplitSum(withoutManager) !== totalAmount) {
+    withoutManager.clinic = roundMoney(Math.max(0, totalAmount - withoutManager.platform));
+  }
+  return { totalAmount, withManager, withoutManager };
+}
+
 /** Public Book-by-Need price — always patient totalAmount (same with/without manager). */
 function flattenTechniquePrices(prices) {
   const out = {};
@@ -367,6 +451,16 @@ async function buildSnapshot() {
     doc?.techniquePrices,
     platformCommissionPerSessionRupees,
   );
+  const clinicSessionPricing = normalizeClinicSessionPricing(doc?.clinicSessionPricing, {
+    totalAmount: DEFAULT_CLINIC_SESSION_TOTAL,
+    platform: platformCommissionPerSessionRupees,
+    clinic: readMoney(doc, 'clinicCommissionPerSessionRupees', DEFAULT_CLINIC_COMMISSION_PER_SESSION),
+    manager:
+      Number(managerCommissionPerSessionRupees) > 0
+        ? managerCommissionPerSessionRupees
+        : DEFAULT_CLINIC_MANAGER_COMMISSION_PER_SESSION,
+  });
+  const clinicCommissionPerSessionRupees = clinicSessionPricing.withManager.clinic;
   const allowedPlanSessionCounts = [...ALLOWED_PLAN_SESSION_COUNTS];
 
   return {
@@ -378,7 +472,9 @@ async function buildSnapshot() {
     homePlanMaxDiscountPercent,
     defaultPhysioPricePerSession,
     managerCommissionPerSessionRupees,
+    clinicCommissionPerSessionRupees,
     defaultSessionPricing,
+    clinicSessionPricing,
     techniquePrices,
     allowedPlanSessionCounts,
     planTiers,
@@ -412,6 +508,15 @@ function snapshotOrFallback() {
     defaultPhysioPricePerSession: DEFAULT_PHYSIO_PRICE_PER_SESSION,
     managerCommissionPerSessionRupees: DEFAULT_MANAGER_COMMISSION_PER_SESSION,
   });
+  const clinicSessionPricing = normalizeClinicSessionPricing(null, {
+    totalAmount: DEFAULT_CLINIC_SESSION_TOTAL,
+    platform: defaultSessionPricing.withManager.platform,
+    clinic: DEFAULT_CLINIC_COMMISSION_PER_SESSION,
+    manager:
+      Number(defaultSessionPricing.withManager.manager) > 0
+        ? defaultSessionPricing.withManager.manager
+        : DEFAULT_CLINIC_MANAGER_COMMISSION_PER_SESSION,
+  });
   return {
     defaultBookingAmountRupees: defaultSessionPricing.totalAmount,
     platformCommissionPerSessionRupees: defaultSessionPricing.withManager.platform,
@@ -421,7 +526,9 @@ function snapshotOrFallback() {
     homePlanMaxDiscountPercent: DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT,
     defaultPhysioPricePerSession: defaultSessionPricing.withManager.physio,
     managerCommissionPerSessionRupees: defaultSessionPricing.withManager.manager,
+    clinicCommissionPerSessionRupees: clinicSessionPricing.withManager.clinic,
     defaultSessionPricing,
+    clinicSessionPricing,
     techniquePrices: defaultTechniquePriceObjects(platform),
     allowedPlanSessionCounts: [...ALLOWED_PLAN_SESSION_COUNTS],
     planTiers: DEFAULT_PLAN_TIERS.map((t) => ({ ...t })),
@@ -443,13 +550,45 @@ export function getManagerCommissionPerSessionSync() {
   return snapshotOrFallback().managerCommissionPerSessionRupees;
 }
 
+export function getClinicSessionPricingSync() {
+  return snapshotOrFallback().clinicSessionPricing;
+}
+
+/** @param {boolean} [includeManager=false] */
+export function getClinicSessionSplitSync(includeManager = false) {
+  const entry = getClinicSessionPricingSync();
+  return includeManager ? entry.withManager : entry.withoutManager;
+}
+
+export function getClinicCommissionPerSessionSync() {
+  return snapshotOrFallback().clinicCommissionPerSessionRupees;
+}
+
+/**
+ * Flat clinic commission per session for a booking (INR).
+ */
+export function getEffectiveClinicCommissionPerSessionSync(booking) {
+  if (!booking) return getClinicCommissionPerSessionSync();
+  const snap = Number(booking.clinicCommissionPerSession);
+  if (Number.isFinite(snap) && snap >= 0) return snap;
+  const includeManager = booking.clinicSource === 'manager_referred';
+  return getClinicSessionSplitSync(includeManager).clinic;
+}
+
 /**
  * Flat manager commission per session for a booking (INR).
  * Technique bookings use Techniques with/without-manager Care manager ₹,
  * not Defaults "Care-manager commission".
+ * Clinic visits: only when manager_referred.
  */
 export function getEffectiveManagerCommissionPerSessionSync(booking) {
   if (!booking) return getManagerCommissionPerSessionSync();
+  if (booking.serviceType === 'clinic' || booking.carePath === 'clinic_visit') {
+    if (booking.clinicSource !== 'manager_referred') return 0;
+    const snap = Number(booking.managerCommissionPerSession);
+    if (Number.isFinite(snap) && snap >= 0) return snap;
+    return getClinicSessionSplitSync(true).manager;
+  }
   const issue = booking.issue;
   if (isTechniqueIssue(issue)) {
     const includeManager = booking.carePath !== 'technique_direct';

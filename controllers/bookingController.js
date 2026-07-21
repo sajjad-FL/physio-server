@@ -63,7 +63,7 @@ const PHYSIO_SLOT_CONFLICT_MSG =
   'This physiotherapist already has another booking in that time slot';
 const SLOT_AT_PLATFORM_CAPACITY_MSG =
   'All available physiotherapists are already booked for this time slot';
-const ALLOWED_SERVICE_TYPES = ['online', 'home'];
+const ALLOWED_SERVICE_TYPES = ['online', 'home', 'clinic'];
 
 function defaultBookingAmountRupees() {
   return getDefaultBookingAmountRupeesSync();
@@ -469,6 +469,7 @@ export async function getAdminBookingById(req, res, next) {
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates pincode')
       .populate('managerId', 'name phone')
+      .populate('clinicId', 'name address phone pincode')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
@@ -492,6 +493,7 @@ export async function getBookingById(req, res, next) {
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates pincode')
       .populate('managerId', 'name phone')
+      .populate('clinicId', 'name address phone pincode')
       .populate(
         'physioId',
         'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews'
@@ -864,6 +866,96 @@ export async function requestHomeBooking(req, res, next) {
 }
 
 /**
+ * Direct clinic appointment request. Admin assigns the clinic later.
+ * No care manager / zone auto-assign.
+ */
+export async function requestClinicBooking(req, res, next) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { name, location, issue, date, timeSlot, consentAccepted } = req.body || {};
+    if (consentAccepted !== true) {
+      return res.status(400).json({ message: 'You must accept consent before booking' });
+    }
+    if (!name?.trim() || !location?.trim() || !issue?.trim() || !date || !timeSlot) {
+      return res
+        .status(400)
+        .json({ message: 'name, location, issue, date, and timeSlot are required' });
+    }
+    if (!isValidDateString(date)) {
+      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+    }
+    const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
+    if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'timeSlot is not available' });
+    }
+
+    const todayYmd = todayYMDLocal();
+    if (date < todayYmd) {
+      return res.status(400).json({ message: 'Date must be today or in the future' });
+    }
+    if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'This time slot is no longer available' });
+    }
+    if (date === todayYmd && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
+      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+    }
+
+    const coords = parseCoords(req.body);
+    const pincode = normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
+    const userUpdate = { name: name.trim(), location: location.trim() };
+    if (coords) userUpdate.coordinates = coords;
+    if (pincode) userUpdate.pincode = pincode;
+    const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+    if (!user || !user.isVerified) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    let booking;
+    try {
+      const { bookingSeq, bookingCode } = await allocateBookingCode();
+      booking = new Booking({
+        userId,
+        physioId: null,
+        clinicId: null,
+        issue: issue.trim(),
+        date,
+        timeSlot: normalizedTimeSlot,
+        status: 'pending',
+        paymentStatus: 'pending',
+        serviceType: 'clinic',
+        carePath: 'clinic_visit',
+        clinicSource: 'direct',
+        planStatus: 'requested',
+        workflowStatus: 'pending_clinic_assignment',
+        pincode: pincode || null,
+        consentAccepted: true,
+        bookingSeq,
+        bookingCode,
+      });
+      await booking.save();
+    } catch (e) {
+      if (e?.code === 11000) {
+        return res.status(409).json({
+          message:
+            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+        });
+      }
+      throw e;
+    }
+
+    const out = await Booking.findById(booking._id)
+      .populate('userId', 'name phone location coordinates pincode')
+      .populate('clinicId', 'name address phone')
+      .lean();
+    return res.status(201).json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Technique home booking (Cupping / Dry Needling / Kinesio / IASTM).
  * If the patient has a live/in-treatment plan with a care manager, attach that
  * manager (commission + assign/collect). Otherwise admin-led technique_direct.
@@ -879,6 +971,10 @@ export async function requestTechniqueBooking(req, res, next) {
       return res.status(400).json({ message: 'You must accept consent before booking' });
     }
 
+    const serviceTypeRaw = String(body.serviceType || 'home').trim().toLowerCase();
+    const serviceType = serviceTypeRaw === 'clinic' ? 'clinic' : 'home';
+    const visitLabel = serviceType === 'clinic' ? 'clinic visit' : 'home visit';
+
     const existingUser = await User.findById(userId)
       .select('name location coordinates address isVerified')
       .lean();
@@ -890,15 +986,18 @@ export async function requestTechniqueBooking(req, res, next) {
     const location = String(
       body.location || existingUser.address?.text || existingUser.location || '',
     ).trim();
-    if (!name || !location || !issue?.trim() || !date || !timeSlot) {
+
+    if (!name || !issue?.trim() || !date || !timeSlot) {
       return res.status(400).json({
         message: !name
           ? 'Complete your profile name before booking'
-          : !location
-            ? 'Add a home address before booking'
-            : 'name, location, issue, date, and timeSlot are required',
+          : 'name, issue, date, and timeSlot are required',
       });
     }
+    if (serviceType === 'home' && !location) {
+      return res.status(400).json({ message: 'Add a home address before booking' });
+    }
+
     const techniqueIssue = String(issue).trim();
     if (!isTechniqueIssue(techniqueIssue)) {
       return res.status(400).json({
@@ -944,9 +1043,12 @@ export async function requestTechniqueBooking(req, res, next) {
       }
     }
     const pincode = normalizePincode(body?.pincode) || normalizePincode(location);
-    const userUpdate = { name, location };
-    if (coords) userUpdate.coordinates = coords;
-    if (pincode) userUpdate.pincode = pincode;
+    const userUpdate = { name };
+    if (serviceType === 'home' && location) {
+      userUpdate.location = location;
+      if (coords) userUpdate.coordinates = coords;
+      if (pincode) userUpdate.pincode = pincode;
+    }
     const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
     if (!user || !user.isVerified) {
       return res.status(401).json({ message: 'Unauthorized' });
@@ -968,7 +1070,7 @@ export async function requestTechniqueBooking(req, res, next) {
         timeSlot: normalizedTimeSlot,
         status: 'pending',
         paymentStatus: 'pending',
-        serviceType: 'home',
+        serviceType,
         consentAccepted: true,
         sessions: 1,
         amountPerSession: price,
@@ -1024,7 +1126,7 @@ export async function requestTechniqueBooking(req, res, next) {
       try {
         await notifyExpoUsers([booking.managerId], {
           title: 'New technique booking',
-          body: `${techniqueIssue} — assign a physiotherapist for this home visit.`,
+          body: `${techniqueIssue} — assign a physiotherapist for this ${visitLabel}.`,
           data: { kind: 'technique_managed', bookingId: String(booking._id) },
         });
       } catch {

@@ -50,6 +50,7 @@ const populateBooking = (q) =>
   q
     .populate('userId', 'name phone location coordinates pincode')
     .populate('managerId', 'name phone')
+    .populate('clinicId', 'name address phone')
     .populate('zoneId', 'name pincodes')
     .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
     .lean();
@@ -185,7 +186,7 @@ export async function listManagerBookings(req, res, next) {
     const { page, limit, skip } = readPagination(req.query);
     const { workflowStatus } = req.query || {};
 
-    const filter = { managerId, serviceType: 'home' };
+    const filter = { managerId, serviceType: { $in: ['home', 'clinic'] } };
     if (workflowStatus) filter.workflowStatus = String(workflowStatus);
     const workflow = String(req.query?.workflow || 'all');
     if (workflow === 'waiting') {
@@ -1010,12 +1011,16 @@ export async function managerSuggestTechnique(req, res, next) {
     if (loaded.error) return res.status(loaded.error.status).json({ message: loaded.error.message });
     const source = loaded.booking;
 
-    if (source.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Technique bookings are only for home-care patients' });
+    if (source.serviceType !== 'home' && source.serviceType !== 'clinic') {
+      return res.status(400).json({ message: 'Technique bookings are only for home or clinic care patients' });
     }
     if (!source.userId) {
       return res.status(400).json({ message: 'This case has no patient' });
     }
+
+    const venueRaw = String(req.body?.serviceType || 'home').trim().toLowerCase();
+    const techniqueServiceType = venueRaw === 'clinic' ? 'clinic' : 'home';
+    const visitLabel = techniqueServiceType === 'clinic' ? 'clinic visit' : 'home visit';
 
     const techniqueIssue = String(issue || '').trim();
     if (!isTechniqueIssue(techniqueIssue)) {
@@ -1116,9 +1121,9 @@ export async function managerSuggestTechnique(req, res, next) {
       return res.status(400).json({ message: 'Patient account not found' });
     }
     const location = String(patient.location || '').trim();
-    if (!location) {
+    if (techniqueServiceType === 'home' && !location) {
       return res.status(400).json({
-        message: 'Patient needs a saved home address before you can book a technique visit',
+        message: 'Patient needs a saved home address before you can book a home technique visit',
       });
     }
 
@@ -1149,7 +1154,7 @@ export async function managerSuggestTechnique(req, res, next) {
         timeSlot: firstTime,
         status: 'pending',
         paymentStatus: 'pending',
-        serviceType: 'home',
+        serviceType: techniqueServiceType,
         consentAccepted: true,
         sessions,
         schedule,
@@ -1193,7 +1198,7 @@ export async function managerSuggestTechnique(req, res, next) {
         sessions > 1 ? `${sessions} sessions starting ${firstDate}` : `for ${firstDate}`;
       await notifyExpoUsers([booking.userId], {
         title: 'Technique session booked',
-        body: `Your care manager booked ${techniqueIssue} (${sessionPart}). They will assign a physiotherapist.`,
+        body: `Your care manager booked ${techniqueIssue} (${sessionPart}, ${visitLabel}). They will assign a physiotherapist.`,
         data: { kind: 'technique_managed', bookingId: String(booking._id) },
       });
     });

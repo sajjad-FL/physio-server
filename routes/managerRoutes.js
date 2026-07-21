@@ -16,6 +16,7 @@ import {
   listManagerWalletTransactions,
   managerSuggestTechnique,
 } from '../controllers/managerController.js';
+import { managerAssignClinic, listClinics } from '../controllers/clinicAdminController.js';
 import {
   createManagerWithdrawRequest,
   getManagerPendingWithdraw,
@@ -23,6 +24,7 @@ import {
 import { getManagerPaymentQr } from '../controllers/platformSettingsController.js';
 import { rescheduleBooking, deleteAdminBookingSession } from '../controllers/bookingController.js';
 import { uploadPaymentProof } from '../config/upload.js';
+import { createStaffPatient } from '../controllers/staffPatientController.js';
 
 const router = Router();
 
@@ -32,11 +34,14 @@ const managerChain = [
   requireRoles('care_manager'),
 ];
 
+router.post('/users', ...managerChain, createStaffPatient);
 router.get('/bookings', ...managerChain, listManagerBookings);
 router.get('/bookings/:id', ...managerChain, getManagerBooking);
 router.patch('/bookings/:id/assessment', ...managerChain, recordAssessment);
 router.patch('/bookings/:id/create-plan', ...managerChain, managerCreatePlan);
 router.patch('/bookings/:id/assign-physio', ...managerChain, managerAssignPhysio);
+router.patch('/bookings/:id/assign-clinic', ...managerChain, managerAssignClinic);
+router.get('/clinics', ...managerChain, listClinics);
 router.get('/payment-qr', ...managerChain, getManagerPaymentQr);
 router.post(
   '/bookings/:id/collections',

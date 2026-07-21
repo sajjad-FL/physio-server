@@ -23,6 +23,7 @@ import platformRoutes from './routes/platformRoutes.js';
 import seoRoutes from './routes/seoRoutes.js';
 import referralRoutes from './routes/referralRoutes.js';
 import managerRoutes from './routes/managerRoutes.js';
+import clinicRoutes from './routes/clinicRoutes.js';
 import shopRoutes from './routes/shopRoutes.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -91,6 +92,7 @@ app.use('/api/platform', platformRoutes);
 app.use('/api/seo', seoRoutes);
 app.use('/api/referral', referralRoutes);
 app.use('/api/manager', managerRoutes);
+app.use('/api/clinic', clinicRoutes);
 app.use('/api/shop', shopRoutes);
 
 app.use((err, _req, res, _next) => {

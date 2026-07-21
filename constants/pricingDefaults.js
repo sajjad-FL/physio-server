@@ -11,6 +11,12 @@ export const DEFAULT_HOME_PLAN_MAX_DISCOUNT_PERCENT = 15;
 export const DEFAULT_PHYSIO_PRICE_PER_SESSION = 500;
 /** Flat care-manager commission per session (INR). 0 = manager commission disabled. */
 export const DEFAULT_MANAGER_COMMISSION_PER_SESSION = 0;
+/** Flat clinic commission per session (INR) for clinic visits. */
+export const DEFAULT_CLINIC_COMMISSION_PER_SESSION = 300;
+/** Manager referrer cut on clinic visits when clinicSource=manager_referred. */
+export const DEFAULT_CLINIC_MANAGER_COMMISSION_PER_SESSION = 50;
+/** Default patient total for a clinic visit session (INR). */
+export const DEFAULT_CLINIC_SESSION_TOTAL = 800;
 
 /** Technique issues that use direct home booking (no care manager). */
 export const TECHNIQUE_ISSUES = ['Cupping Therapy', 'Dry Needling', 'Kinesio Taping', 'IASTM'];

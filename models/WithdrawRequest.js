@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const withdrawRequestSchema = new mongoose.Schema(
   {
-    /** Payee: exactly one of physioId / managerId must be set. */
+    /** Payee: exactly one of physioId / managerId / clinicStaffUserId must be set. */
     physioId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Physiotherapist',
@@ -12,6 +12,18 @@ const withdrawRequestSchema = new mongoose.Schema(
     managerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
+      default: null,
+      index: true,
+    },
+    clinicStaffUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+    clinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
       default: null,
       index: true,
     },
@@ -39,15 +51,18 @@ const withdrawRequestSchema = new mongoose.Schema(
 );
 
 withdrawRequestSchema.pre('validate', function requireExactlyOnePayee(next) {
-  const hasPhysio = Boolean(this.physioId);
-  const hasManager = Boolean(this.managerId);
-  if (hasPhysio === hasManager) {
-    this.invalidate('physioId', 'Exactly one of physioId or managerId must be set');
+  const n =
+    Number(Boolean(this.physioId)) +
+    Number(Boolean(this.managerId)) +
+    Number(Boolean(this.clinicStaffUserId));
+  if (n !== 1) {
+    this.invalidate('physioId', 'Exactly one of physioId, managerId, or clinicStaffUserId must be set');
   }
   next();
 });
 
 withdrawRequestSchema.index({ physioId: 1, status: 1 });
 withdrawRequestSchema.index({ managerId: 1, status: 1 });
+withdrawRequestSchema.index({ clinicStaffUserId: 1, status: 1 });
 
 export default mongoose.model('WithdrawRequest', withdrawRequestSchema);
