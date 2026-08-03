@@ -32,7 +32,7 @@ Use this copy when creating templates in AuthKey (or Meta Business Manager). Aft
 |--------|--------|
 | **Category** | AUTHENTICATION |
 | **Language** | en |
-| **Current `wid`** | `41531` (env `AUTHKEY_WID`) |
+| **Current `wid`** | `26913` (env `AUTHKEY_WID`, template `physiokhom_auth`) |
 | **When** | Signup verification, forgot password |
 
 **Body**
@@ -82,18 +82,24 @@ Hi {{1}}, PhysiOkhom has received your {{4}} booking for {{2}} at {{3}}. We will
 
 ---
 
-### 2. `physio_assigned`
+### 2. `physio_assigned` / `physiokhom_appointment_confirmation`
 
 | Field | Value |
 |--------|--------|
 | **Category** | UTILITY |
-| **Language** | en |
-| **When** | A physiotherapist is assigned to the booking |
+| **Language** | en_US |
+| **When** | Appointment confirmed (physio accept / online paid) **and** patient notified on manager or clinic assign |
+| **AuthKey Message ID (`wid`)** | `26916` (`FAST2SMS_MESSAGE_ID_APPOINTMENT`) |
+| **Meta Template ID** | `1354025180221960` |
 
-**Body**
+**Body (update in Fast2SMS / Meta — keep same 5 variables)**
 
 ```text
-Hi {{1}}, {{2}} has been assigned as your physiotherapist for {{3}} at {{4}}. Open PhysiOkhom for visit details.
+Hello {{1}},
+
+Thank you for booking with {{2}}.
+
+Your {{3}} on {{4}} at {{5}} is confirmed.
 ```
 
 **Variables**
@@ -101,12 +107,19 @@ Hi {{1}}, {{2}} has been assigned as your physiotherapist for {{3}} at {{4}}. Op
 | Var | Meaning | Example |
 |-----|---------|---------|
 | `{{1}}` | Patient name | `Riya` |
-| `{{2}}` | Physiotherapist name | `Dr. Ankit Sharma` |
-| `{{3}}` | Visit date | `22 Jul 2026` |
-| `{{4}}` | Time slot | `10:00 AM` |
+| `{{2}}` | Physio / care manager / clinic name | `Dr. Ankit Sharma` / `Priya Das` / `Kokrajhar Clinic` |
+| `{{3}}` | Visit type | `home visit` / `clinic visit` / `online consultation` |
+| `{{4}}` | Date | `22 Jul 2026` |
+| `{{5}}` | Time | `10:00 AM` |
 
-**Notes:** Plain confirmation only; no fees or promo text.
+**Notes:** Same message ID `26916` — edit the approved template body in Fast2SMS/Meta (or submit a new version if Meta requires it). App code already sends `{{1}}…{{5}}` in this order; no server change needed after you update the template text.
 
+**Was:**
+```text
+Hello {{1}},
+Thank you for booking with {{2}}.
+Your appointment for {{3}} on {{4}} at {{5}} is confirmed.
+```
 ---
 
 ### 3. `care_plan_ready`
@@ -154,22 +167,59 @@ Hi {{1}}, your PhysiOkhom visit has been rescheduled to {{2}} at {{3}}. Open the
 |-----|---------|---------|
 | `{{1}}` | Patient name | `Riya` |
 | `{{2}}` | New date | `24 Jul 2026` |
-| `{{3}}` | New time | `4:00 PM` |
+| `{{3}}` | Time slot | `4:00 PM` |
 
 ---
 
-### 5. `payment_received`
+### 4b. `physio_upcomming_appointment` (physio daily cron)
 
 | Field | Value |
 |--------|--------|
 | **Category** | UTILITY |
-| **Language** | en |
+| **Language** | en_US |
+| **When** | Every day at **3:00 AM IST** — one WhatsApp per visit the physio has that day |
+| **AuthKey Message ID (`wid`)** | `26927` (`AUTHKEY_WID_PHYSIO_UPCOMING`) |
+| **Meta Template ID** | `1329983772350481` |
+| **Status** | Approve in AuthKey before production sends succeed |
+
+**Body**
+
+```text
+You have an upcoming event
+Reminder: You RSVP'ed to {{1}} by {{2}}.
+The event starts on {{3}} at {{4}} at {{5}} location.
+```
+
+**Variables (as sent by cron)**
+
+| Var | Meaning | Example |
+|-----|---------|---------|
+| `{{1}}` | Visit index + type | `Visit 1 of 3: home visit` |
+| `{{2}}` | Patient name | `Riya` |
+| `{{3}}` | Date | `28 Jul 2026` |
+| `{{4}}` | Time slot | `10:00-11:00` |
+| `{{5}}` | Location | patient address / Clinic / Online |
+
+---
+
+### 5. `payment_received` / `payment_confirmation_1`
+
+| Field | Value |
+|--------|--------|
+| **Category** | UTILITY |
+| **Language** | en_US |
 | **When** | Payment or installment is verified / recorded |
+| **AuthKey Message ID (`wid`)** | `26922` (`AUTHKEY_WID_PAYMENT_RECEIVED`) |
+| **Meta Template ID** | `1506617894105853` |
 
 **Body**
 
 ```text
-Hi {{1}}, PhysiOkhom has received your payment of Rs.{{2}}. Thank you.
+Hi {{1}},
+
+We have received your payment of {{2}} for {{3}}.
+
+Thank you for your payment.
 ```
 
 **Variables**
@@ -177,30 +227,45 @@ Hi {{1}}, PhysiOkhom has received your payment of Rs.{{2}}. Thank you.
 | Var | Meaning | Example |
 |-----|---------|---------|
 | `{{1}}` | Patient name | `Riya` |
-| `{{2}}` | Amount (number, no currency symbol if Meta rejects “Rs.” in body — then use plain digits only) | `1500` |
+| `{{2}}` | Amount (include currency in the value) | `Rs.1,500` |
+| `{{3}}` | What the payment is for | `home visit` / `Session 1` |
+---
 
-**Notes:** If Meta rejects “Rs.”, use: `…payment of {{2}}. Thank you.` and pass `1500` or `INR 1500` in `{{2}}`.
+### 6. Manager / clinic assignment — **reuse live templates** (wired)
 
-**Alternate body (if currency symbol causes rejection)**
+Do **not** create separate Meta templates for these. Sends use:
 
-```text
-Hi {{1}}, PhysiOkhom has received your payment of {{2}}. Thank you.
-```
+| Audience | Template | Message ID |
+|----------|----------|------------|
+| Patient (manager or clinic assigned) | Appointment confirmation | `26916` |
+| Care manager (new case) | Physio upcoming style | `26927` |
+| Clinic staff / clinic phone | Physio upcoming style | `26927` |
+
+**Patient vars (`26916`):** `{{1}}` name · `{{2}}` manager or clinic name · `{{3}}` visit type · `{{4}}` date · `{{5}}` time  
+
+**Staff vars (`26927`):** `{{1}}` `New case: home visit` / `New booking: clinic visit` · `{{2}}` patient · `{{3}}` date · `{{4}}` time · `{{5}}` location  
+
+**Triggers (code):** `notifyOnManagerAssigned` / `notifyOnClinicAssigned` in `utils/assignmentWhatsApp.js` — admin assign/reassign manager, zone auto-assign on home booking, admin/manager assign clinic.
 
 ---
 
-### 6. `clinic_assigned`
+### 6-legacy (optional dedicated copy — only if Meta wording must change)
+
+<details>
+<summary>Optional dedicated templates (not required while reusing 26916 / 26927)</summary>
+
+### `clinic_assigned` (patient)
 
 | Field | Value |
 |--------|--------|
 | **Category** | UTILITY |
 | **Language** | en |
-| **When** | Patient case is assigned to a clinic facility |
+| **When** | Admin or care manager assigns the booking to a clinic |
 
 **Body**
 
 ```text
-Hi {{1}}, your PhysiOkhom care will continue at {{2}}. The clinic team will guide you for your visit.
+Hi {{1}}, your PhysiOkhom {{2}} has been assigned to {{3}}. The clinic team will guide you for your visit on {{4}} at {{5}}.
 ```
 
 **Variables**
@@ -208,30 +273,113 @@ Hi {{1}}, your PhysiOkhom care will continue at {{2}}. The clinic team will guid
 | Var | Meaning | Example |
 |-----|---------|---------|
 | `{{1}}` | Patient name | `Riya` |
+| `{{2}}` | Visit type | `home visit` / `clinic visit` |
+| `{{3}}` | Clinic name | `Kokrajhar Clinic` |
+| `{{4}}` | Date | `22 Jul 2026` |
+| `{{5}}` | Time slot | `10:00 AM` |
+
+### `care_manager_assigned` (patient)
+
+| Field | Value |
+|--------|--------|
+| **Category** | UTILITY |
+| **Language** | en |
+| **When** | Admin assigns a care manager to the patient's booking (or auto-assign by zone) |
+
+**Body**
+
+```text
+Hi {{1}}, PhysiOkhom has assigned care manager {{2}} to your {{3}} on {{4}} at {{5}}. They will contact you for the next steps.
+```
+
+**Variables**
+
+| Var | Meaning | Example |
+|-----|---------|---------|
+| `{{1}}` | Patient name | `Riya` |
+| `{{2}}` | Care manager name | `Priya Das` |
+| `{{3}}` | Visit type | `home visit` |
+| `{{4}}` | Date | `22 Jul 2026` |
+| `{{5}}` | Time slot | `10:00 AM` |
+
+### `care_manager_new_case` (care manager)
+
+| Field | Value |
+|--------|--------|
+| **Category** | UTILITY |
+| **Language** | en |
+| **When** | A booking is assigned to this care manager — notify the manager |
+
+**Body**
+
+```text
+Hi {{1}}, you have a new PhysiOkhom case. Patient {{2}} · {{3}} on {{4}} at {{5}}. Open the app to review the booking.
+```
+
+**Variables**
+
+| Var | Meaning | Example |
+|-----|---------|---------|
+| `{{1}}` | Care manager name | `Priya Das` |
+| `{{2}}` | Patient name | `Riya` |
+| `{{3}}` | Visit type | `home visit` |
+| `{{4}}` | Date | `22 Jul 2026` |
+| `{{5}}` | Time slot | `10:00 AM` |
+
+### `clinic_new_booking` (clinic staff)
+
+| Field | Value |
+|--------|--------|
+| **Category** | UTILITY |
+| **Language** | en |
+| **When** | A booking is assigned to this clinic — notify clinic staff phone(s) |
+
+**Body**
+
+```text
+Hi {{1}}, {{2}} has a new PhysiOkhom booking. Patient {{3}} · {{4}} on {{5}} at {{6}}. Open the clinic dashboard to review.
+```
+
+**Variables**
+
+| Var | Meaning | Example |
+|-----|---------|---------|
+| `{{1}}` | Clinic staff / clinic contact name | `Front desk` / `Amit` |
 | `{{2}}` | Clinic name | `Kokrajhar Clinic` |
+| `{{3}}` | Patient name | `Riya` |
+| `{{4}}` | Visit type | `clinic visit` |
+| `{{5}}` | Date | `22 Jul 2026` |
+| `{{6}}` | Time slot | `10:00 AM` |
+
+</details>
 
 ---
 
-### 7. `session_completed`
+### 7. `session_completed` / `feedback_survey_form_1`
 
 | Field | Value |
 |--------|--------|
 | **Category** | UTILITY |
-| **Language** | en |
-| **When** | A treatment session is marked completed |
+| **Language** | en_US |
+| **When** | After every treatment session is marked completed |
+| **AuthKey Message ID (`wid`)** | `26926` (`AUTHKEY_WID_FEEDBACK_SURVEY`) |
+| **Meta Template ID** | `1006075285582544` |
 
 **Body**
 
 ```text
-Hi {{1}}, your PhysiOkhom session ({{2}}) is marked complete. Open the app to see remaining sessions and next steps.
+Rate your experience
+
+Your feedback is important to us. Please take a quick survey about your recent {{1}} experience.
 ```
 
 **Variables**
 
 | Var | Meaning | Example |
 |-----|---------|---------|
-| `{{1}}` | Patient name | `Riya` |
-| `{{2}}` | Session label | `Session 2 of 6` |
+| `{{1}}` | Experience / visit type | `home visit` / `Session 2 physiotherapy` |
+
+**Notes:** Includes a **Take survey** button. Dynamic URL suffix (if configured) receives the booking id so the patient can rate in-app.
 
 ---
 
@@ -264,14 +412,16 @@ Hi {{1}}, a PhysiOkhom account was created for you. Log in with mobile {{2}} and
 
 | Template name | Category | Vars | AuthKey `wid` | Env key (later) | Status |
 |---------------|----------|------|---------------|-----------------|--------|
-| `physio_otp_verify` | AUTHENTICATION | 1 | `41531` | `AUTHKEY_WID` | Live |
+| `physio_otp_verify` / `physiokhom_auth` | AUTHENTICATION | 1 | `26913` | `AUTHKEY_WID` | Live |
 | `booking_received` | UTILITY | 4 | | `AUTHKEY_WID_BOOKING_RECEIVED` | Pending |
-| `physio_assigned` | UTILITY | 4 | | `AUTHKEY_WID_PHYSIO_ASSIGNED` | Pending |
+| `physio_assigned` / `physiokhom_appointment_confirmation` | UTILITY | 5 | `26916` | `AUTHKEY_WID_APPOINTMENT_CONFIRMED` | Live |
 | `care_plan_ready` | UTILITY | 2 | | `AUTHKEY_WID_CARE_PLAN_READY` | Pending |
 | `visit_rescheduled` | UTILITY | 3 | | `AUTHKEY_WID_VISIT_RESCHEDULED` | Pending |
-| `payment_received` | UTILITY | 2 | | `AUTHKEY_WID_PAYMENT_RECEIVED` | Pending |
-| `clinic_assigned` | UTILITY | 2 | | `AUTHKEY_WID_CLINIC_ASSIGNED` | Pending |
-| `session_completed` | UTILITY | 2 | | `AUTHKEY_WID_SESSION_COMPLETED` | Pending |
+| `physio_upcomming_appointment` | UTILITY | 5 | `26927` | `AUTHKEY_WID_PHYSIO_UPCOMING` | Pending Meta — cron wired |
+| `payment_received` / `payment_confirmation_1` | UTILITY | 3 | `26922` | `AUTHKEY_WID_PAYMENT_RECEIVED` | Live |
+| `clinic_assigned` / manager assign patient | UTILITY | 5 | `26916` | `FAST2SMS_MESSAGE_ID_APPOINTMENT` | **Reuse live** appointment |
+| `care_manager_new_case` / `clinic_new_booking` | UTILITY | 5 | `26927` | `FAST2SMS_MESSAGE_ID_PHYSIO_UPCOMING` | **Reuse live** upcoming |
+| `session_completed` / `feedback_survey_form_1` | UTILITY | 1 | `26926` | `AUTHKEY_WID_FEEDBACK_SURVEY` | Live |
 | `account_created_by_staff` | UTILITY | 2 | | `AUTHKEY_WID_ACCOUNT_CREATED` | Pending |
 
 ---

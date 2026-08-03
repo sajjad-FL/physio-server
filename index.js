@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { connectDB } from './config/db.js';
 import { warmPricingCache } from './utils/pricingConfig.js';
 import Booking from './models/Booking.js';
+import { startCronJobs } from './jobs/cron.js';
 import { uploadsRoot, MAX_UPLOAD_BYTES } from './config/upload.js';
 import bookingRoutes from './routes/bookingRoutes.js';
 import physioRoutes from './routes/physioRoutes.js';
@@ -122,6 +123,7 @@ async function main() {
   }
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);
+    startCronJobs();
   });
 }
 

@@ -5,6 +5,7 @@ import { applyWalletCredit } from '../utils/walletCheckout.js';
 import { deductWalletForBooking } from '../utils/walletLedger.js';
 import { releaseEscrowBooking } from '../utils/releaseEscrow.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { notifyPaymentReceivedWhatsApp } from '../utils/authKeyOtp.js';
 import {
   bookingAmountRupees,
   computeMarketplaceSplit,
@@ -173,6 +174,14 @@ export async function verifyPayment(req, res, next) {
     await booking.populate('userId', 'phone location coordinates name');
 
     const userPhone = booking.userId?.phone;
+    const amount = Number(booking.payment?.amount || booking.totalAmount || 0);
+    await notifyPaymentReceivedWhatsApp({
+      phone: userPhone,
+      name: booking.userId?.name || booking.name,
+      amount,
+      booking,
+    });
+
     if (booking.physioId) {
       await sendSMS({
         to: userPhone,

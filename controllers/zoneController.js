@@ -4,6 +4,10 @@ import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import { normalizePincode } from '../utils/pincode.js';
 import { pickLeastLoadedManager } from '../utils/zoneAssign.js';
+import {
+  fireAssignmentWhatsApp,
+  notifyOnManagerAssigned,
+} from '../utils/assignmentWhatsApp.js';
 
 function normalizePincodes(raw) {
   if (!Array.isArray(raw)) return [];
@@ -152,6 +156,8 @@ export async function assignManagerToBooking(req, res, next) {
       .populate('managerId', 'name phone')
       .populate('physioId', 'name specialization phone')
       .lean();
+
+    fireAssignmentWhatsApp('manager-assigned', () => notifyOnManagerAssigned(out));
 
     return res.json(out);
   } catch (err) {

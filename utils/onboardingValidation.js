@@ -35,8 +35,7 @@ export function validateBasicSection(basic) {
   else if (loc.length > 300) errors.location = 'Location is too long';
 
   const dobStr = String(basic?.dob ?? '').trim();
-  if (!dobStr) errors.dob = 'Date of birth is required';
-  else {
+  if (dobStr) {
     const d = new Date(dobStr);
     if (Number.isNaN(d.getTime())) errors.dob = 'Invalid date of birth';
     else {

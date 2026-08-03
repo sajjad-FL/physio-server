@@ -20,7 +20,12 @@ import { persistPaymentProofImage } from '../utils/paymentImagePersist.js';
 import { readPagination, paginationMeta } from '../utils/pagination.js';
 import { applyClinicAssignment } from '../utils/clinicAssign.js';
 import { createPatientUser, CreatePatientError } from '../services/createPatientUser.js';
+import { createClinicPhysio, CreateClinicPhysioError } from '../services/createClinicPhysio.js';
 import { validateIndianMobile } from '../utils/phoneIndia.js';
+import {
+  fireAssignmentWhatsApp,
+  notifyOnClinicAssigned,
+} from '../utils/assignmentWhatsApp.js';
 
 function roundMoney2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -131,8 +136,7 @@ export async function clinicAssignPhysio(req, res, next) {
     if (loaded.error) return res.status(loaded.error.status).json({ message: loaded.error.message });
     const booking = loaded.booking;
 
-    const allowed =
-      !clinic.physioIds?.length || clinic.physioIds.some((pid) => String(pid) === String(physioId));
+    const allowed = (clinic.physioIds || []).some((pid) => String(pid) === String(physioId));
     if (!allowed) {
       return res.status(400).json({ message: 'Physiotherapist is not on this clinic roster' });
     }
@@ -160,14 +164,69 @@ export async function listClinicPhysios(req, res, next) {
   try {
     const clinic = await resolveStaffClinic(req.user?.id);
     if (!clinic) return res.status(404).json({ message: 'No clinic assigned' });
-    const filter = clinic.physioIds?.length
-      ? { _id: { $in: clinic.physioIds } }
-      : { verificationStatus: 'approved' };
-    const physios = await Physiotherapist.find(filter)
-      .select('name specialization phone location verificationStatus available')
+    const ids = clinic.physioIds || [];
+    if (!ids.length) {
+      return res.json({ physios: [], clinic: { _id: clinic._id, name: clinic.name } });
+    }
+    const physios = await Physiotherapist.find({ _id: { $in: ids } })
+      .select(
+        'name specialization phone location verificationStatus status isVerified availability isAvailable clinicId',
+      )
       .sort({ name: 1 })
       .lean();
-    return res.json({ physios: physios.filter((p) => isPhysioBookable(p) || clinic.physioIds?.length) });
+    return res.json({
+      physios,
+      clinic: { _id: clinic._id, name: clinic.name },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function addClinicPhysio(req, res, next) {
+  try {
+    const clinic = await resolveStaffClinic(req.user?.id);
+    if (!clinic) return res.status(404).json({ message: 'No clinic assigned' });
+
+    const { name, phone, password, specialization } = req.body || {};
+    const result = await createClinicPhysio({
+      clinic,
+      name,
+      phone,
+      password,
+      specialization,
+    });
+    return res.status(201).json(result);
+  } catch (err) {
+    if (err instanceof CreateClinicPhysioError) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    next(err);
+  }
+}
+
+export async function removeClinicPhysio(req, res, next) {
+  try {
+    const clinic = await resolveStaffClinic(req.user?.id);
+    if (!clinic) return res.status(404).json({ message: 'No clinic assigned' });
+
+    const physioId = req.params.physioId;
+    if (!mongoose.isValidObjectId(physioId)) {
+      return res.status(400).json({ message: 'Invalid physiotherapist id' });
+    }
+
+    const onRoster = (clinic.physioIds || []).some((pid) => String(pid) === String(physioId));
+    if (!onRoster) {
+      return res.status(404).json({ message: 'Physiotherapist is not on this clinic roster' });
+    }
+
+    await Clinic.findByIdAndUpdate(clinic._id, { $pull: { physioIds: physioId } });
+    await Physiotherapist.findOneAndUpdate(
+      { _id: physioId, clinicId: clinic._id },
+      { $set: { clinicId: null } },
+    );
+
+    return res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -536,6 +595,7 @@ export async function assignClinicToBookingCore({
   });
   await booking.save();
   const out = await populateBooking(Booking.findById(booking._id));
+  fireAssignmentWhatsApp('clinic-assigned', () => notifyOnClinicAssigned(out));
   return { booking: out };
 }
 

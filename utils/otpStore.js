@@ -34,9 +34,10 @@ export function createOtp({ phone, ttlMinutes, purpose = 'default' }) {
 }
 
 /**
- * @param {{ phone: string, otp: string, maxAttempts: number, purpose?: string }} opts
+ * @param {{ phone: string, otp: string, maxAttempts: number, purpose?: string, consume?: boolean }} opts
+ * Set consume:false to validate without removing the OTP (e.g. register may still fail on referral).
  */
-export function verifyOtpAttempt({ phone, otp, maxAttempts, purpose = 'default' }) {
+export function verifyOtpAttempt({ phone, otp, maxAttempts, purpose = 'default', consume = true }) {
   const normalized = normalizeIndianPhone(phone);
   const key = storeKey(purpose, normalized);
   const record = store.get(key);
@@ -62,8 +63,14 @@ export function verifyOtpAttempt({ phone, otp, maxAttempts, purpose = 'default' 
     return { ok: false, reason: 'mismatch' };
   }
 
-  store.delete(key);
+  if (consume) store.delete(key);
   return { ok: true, phone: normalized };
+}
+
+/** Remove a previously verified OTP after the surrounding action succeeds. */
+export function consumeOtp({ phone, purpose = 'default' }) {
+  const normalized = normalizeIndianPhone(phone);
+  store.delete(storeKey(purpose, normalized));
 }
 
 export function cleanupExpired() {

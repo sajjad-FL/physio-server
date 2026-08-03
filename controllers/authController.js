@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
-import { createOtp, startOtpCleanupInterval, verifyOtpAttempt } from '../utils/otpStore.js';
+import { createOtp, startOtpCleanupInterval, verifyOtpAttempt, consumeOtp } from '../utils/otpStore.js';
 import { findUserByNormalizedDigits } from '../utils/physioPhoneLookup.js';
 import { validateIndianMobile } from '../utils/phoneIndia.js';
 import { normalizeRole } from '../utils/userRole.js';
@@ -63,7 +63,7 @@ function buildOtpSendResponse(message, otp) {
   return { message };
 }
 
-/** All OTP sends (signup + forgot-password) go through AuthKey WhatsApp. */
+/** All OTP sends (signup + forgot-password) go through Fast2SMS WhatsApp. */
 async function deliverOtpWhatsApp(normalizedPhone, otp, logLabel) {
   if (DEBUG_OTP) {
     console.log(`[debug][${logLabel}] ${normalizedPhone} -> ${otp}`);
@@ -129,6 +129,8 @@ export async function registerPatient(req, res, next) {
       otp: otpRaw,
       maxAttempts: OTP_MAX_ATTEMPTS,
       purpose: OTP_PURPOSE_SIGNUP,
+      // Keep OTP until account is created — referral / other checks may still fail.
+      consume: false,
     });
     if (!otpResult.ok) {
       if (otpResult.reason === 'locked') {
@@ -214,10 +216,17 @@ export async function registerPatient(req, res, next) {
         .select('_id phone')
         .lean();
       if (!referrer) {
-        return res.status(400).json({ message: 'Invalid referral code' });
+        return res.status(400).json({
+          message:
+            "We couldn't find that referral code. Double-check it, or leave the field blank to continue.",
+          field: 'referralCode',
+        });
       }
       if (referrer.phone === pv.normalized) {
-        return res.status(400).json({ message: 'You cannot use your own referral code' });
+        return res.status(400).json({
+          message: "You can't use your own referral code. Ask a friend for theirs, or leave it blank.",
+          field: 'referralCode',
+        });
       }
       referredBy = referrer._id;
     }
@@ -238,6 +247,8 @@ export async function registerPatient(req, res, next) {
       role: 'user',
       ...(referredBy ? { referredBy } : {}),
     });
+
+    consumeOtp({ phone: pv.normalized, purpose: OTP_PURPOSE_SIGNUP });
 
     let referralSignupBonusCredited = 0;
     if (referredBy) {

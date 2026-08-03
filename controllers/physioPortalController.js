@@ -5,6 +5,10 @@ import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { isPhysioPlatformApproved } from '../utils/physioVerification.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import {
+  notifyAppointmentConfirmedWhatsApp,
+  notifyFeedbackSurveyWhatsApp,
+} from '../utils/authKeyOtp.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { creditPhysioWalletOnline } from '../utils/marketplacePayment.js';
 import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
@@ -262,10 +266,18 @@ export async function respondToAssignment(req, res, next) {
           message:
             'Your physiotherapist has accepted your booking. Open your dashboard for visit details.',
         });
-        await sendWhatsApp({
-          to: userPhone,
-          message:
-            'Good news — your physiotherapist accepted the booking. Check the app for details.',
+        const physioName =
+          booking.physioId?.name ||
+          (await Physiotherapist.findById(booking.physioId).select('name').lean())?.name ||
+          'PhysiOkhom';
+        await notifyAppointmentConfirmedWhatsApp({
+          phone: userPhone,
+          name: user?.name || booking.name,
+          bookedWith: physioName,
+          date: booking.date,
+          time: booking.timeSlot,
+          booking,
+          bookingId: booking._id,
         });
       }
       fireBookingPush(async () => {
@@ -569,6 +581,34 @@ export async function completeSession(req, res, next) {
           data: { kind: 'session_completed', bookingId: bookingIdStr },
         });
       });
+
+      try {
+        const patient = await User.findById(booking.userId).select('phone').lean();
+        if (patient?.phone) {
+          await notifyFeedbackSurveyWhatsApp({
+            phone: patient.phone,
+            sessionLabel: ordinal ? `Session ${ordinal}` : undefined,
+            booking,
+            bookingId: booking._id,
+          });
+        }
+      } catch (_waErr) {
+        // non-fatal
+      }
+    } else {
+      // Single-visit booking completed (no multi-session schedule)
+      try {
+        const patient = await User.findById(booking.userId).select('phone').lean();
+        if (patient?.phone) {
+          await notifyFeedbackSurveyWhatsApp({
+            phone: patient.phone,
+            booking,
+            bookingId: booking._id,
+          });
+        }
+      } catch (_waErr) {
+        // non-fatal
+      }
     }
 
     if (booking.status === 'completed') {

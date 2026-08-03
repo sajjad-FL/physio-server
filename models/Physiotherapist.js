@@ -80,6 +80,8 @@ const physiotherapistSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     email: { type: String, trim: true, default: '' },
     dob: { type: Date, default: null },
+    /** Spoken languages (from physioLanguages allow-list). */
+    languages: { type: [String], default: [] },
     gender: { type: String, trim: true, default: '' },
     address: { type: String, trim: true, default: '' },
     avatar: { type: String, trim: true, default: '' },
@@ -100,6 +102,13 @@ const physiotherapistSchema = new mongoose.Schema(
     pricePerSessionMax: { type: Number, min: 0, default: null },
     location: { type: String, required: true, trim: true },
     phone: { type: String, trim: true, unique: true, sparse: true },
+    /** Set when this physio belongs to a clinic roster (clinic-created or attached). */
+    clinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
+      default: null,
+      index: true,
+    },
     coordinates: { type: coordinatesSchema, default: null },
     /** GeoJSON for $nearSphere queries (synced from `coordinates` on save). */
     geoPoint: {

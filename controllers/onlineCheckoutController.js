@@ -5,6 +5,7 @@ import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
 import {
   computeMarketplaceSplit,
   creditPhysioWalletOnline,
@@ -296,9 +297,22 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
       to: user.phone,
       message: `Payment received. Your online consultation with ${selectedPhysio.name || 'your physio'} is confirmed for ${when}.`,
     });
-    await sendWhatsApp({
-      to: user.phone,
-      message: `Your online consultation is confirmed for ${when}. You can view details in your bookings.`,
+    await notifyPaymentReceivedWhatsApp({
+      phone: user.phone,
+      name: user.name || draft.name,
+      amount: totalAmount,
+      forLabel: `online consultation (${when})`,
+      booking,
+    });
+    await notifyAppointmentConfirmedWhatsApp({
+      phone: user.phone,
+      name: user.name || draft.name,
+      bookedWith: selectedPhysio.name || 'PhysiOkhom',
+      appointmentType: 'online consultation',
+      date: draft.date,
+      time: normalizedTimeSlot,
+      booking,
+      bookingId: booking._id,
     });
   }
   if (selectedPhysio.phone) {

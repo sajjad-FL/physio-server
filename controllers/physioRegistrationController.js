@@ -9,6 +9,10 @@ import {
 } from '../utils/onboardingValidation.js';
 import { validateIndianMobile } from '../utils/phoneIndia.js';
 import { isValidIdProofType } from '../constants/idProofTypes.js';
+import {
+  isValidPhysioLanguage,
+  parsePhysioLanguages,
+} from '../constants/physioLanguages.js';
 
 function normalizeEmail(s) {
   return String(s || '')
@@ -105,6 +109,13 @@ function collectValidationErrors(body, files) {
       { specializationOptional: true },
     ).errors
   );
+
+  const languages = parsePhysioLanguages(body.languages);
+  if (languages.length === 0) {
+    errors.languages = 'Select at least one language';
+  } else if (languages.some((l) => !isValidPhysioLanguage(l))) {
+    errors.languages = 'One or more selected languages are not allowed';
+  }
 
   const certificate = files?.certificate?.[0];
   const idProof = files?.idProof?.[0] || files?.id_proof?.[0];
@@ -251,6 +262,7 @@ export async function registerPhysio(req, res, next) {
       ? String(body.serviceType).trim()
       : 'both';
     const serviceAreas = toAreas(body.areas);
+    const languages = parsePhysioLanguages(body.languages);
 
     const covLat = Number(body.lat);
     const covLng = Number(body.lng);
@@ -277,6 +289,7 @@ export async function registerPhysio(req, res, next) {
         address,
         location,
         coordinates,
+        languages,
         specialization,
         experience,
         serviceType,

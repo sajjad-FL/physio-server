@@ -8,6 +8,8 @@ import {
   getClinicBooking,
   clinicAssignPhysio,
   listClinicPhysios,
+  addClinicPhysio,
+  removeClinicPhysio,
   clinicRecordCollection,
   listClinicLedger,
   getClinicWallet,
@@ -45,6 +47,8 @@ router.post(
   clinicRecordCollection,
 );
 router.get('/physios', ...clinicChain, listClinicPhysios);
+router.post('/physios', ...clinicChain, addClinicPhysio);
+router.delete('/physios/:physioId', ...clinicChain, removeClinicPhysio);
 router.get('/ledger', ...clinicChain, listClinicLedger);
 router.get('/wallet', ...clinicChain, getClinicWallet);
 router.get('/wallet/transactions', ...clinicChain, listClinicWalletTransactions);

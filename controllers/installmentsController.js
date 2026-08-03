@@ -13,7 +13,8 @@ import {
 } from '../services/ledger.js';
 import { distributeManagerPhonePePayment } from '../services/managerSettlement.js';
 import { distributeClinicPhonePePayment } from '../services/clinicSettlement.js';
-import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { sendSMS } from '../utils/notifications.js';
+import { notifyPaymentReceivedWhatsApp } from '../utils/authKeyOtp.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { isPlanLive } from '../utils/planStatus.js';
 
@@ -203,6 +204,21 @@ export async function adminVerifyPayment(req, res, next) {
       await postOfflineInstallmentPair(booking, payment);
     }
     await recomputeBookingPaymentRollup(booking);
+
+    try {
+      await booking.populate('userId', 'phone name');
+      if (booking.userId?.phone) {
+        await notifyPaymentReceivedWhatsApp({
+          phone: booking.userId.phone,
+          name: booking.userId.name,
+          amount: payment.amount,
+          forLabel: sessionLabel(booking, payment.sessionId),
+          booking,
+        });
+      }
+    } catch (_notifyErr) {
+      // non-fatal
+    }
 
     return res.json({ payment: payment.toObject() });
   } catch (err) {
@@ -418,7 +434,13 @@ export async function verifyInstallmentOrder(req, res, next) {
       if (booking.userId?.phone) {
         const msg = `Installment of Rs.${payment.amount.toFixed(2)} received for your booking. Thank you!`;
         await sendSMS({ to: booking.userId.phone, message: msg });
-        await sendWhatsApp({ to: booking.userId.phone, message: msg });
+        await notifyPaymentReceivedWhatsApp({
+          phone: booking.userId.phone,
+          name: booking.userId.name,
+          amount: payment.amount,
+          forLabel: sessionLabel(booking, payment.sessionId),
+          booking,
+        });
       }
     } catch (_notifyErr) {
       // non-fatal

@@ -90,7 +90,7 @@ export async function getPublicPhysioProfile(req, res, next) {
       isVerified: true,
     })
       .select(
-        'name specialization experience pricePerSession pricePerSessionMax location serviceType avatar avgRating totalReviews coordinates phone'
+        'name specialization experience pricePerSession pricePerSessionMax location serviceType avatar avgRating totalReviews coordinates phone languages'
       )
       .lean();
     if (!physio) {
@@ -106,7 +106,7 @@ export async function listPhysios(req, res, next) {
   try {
     const { page, limit, skip } = readPagination(req.query);
     const listSelect =
-      'name specialization experience pricePerSession pricePerSessionMax location phone coordinates availability isAvailable isVerified verificationStatus status avatar avgRating totalReviews createdAt';
+      'name specialization experience pricePerSession pricePerSessionMax location phone coordinates availability isAvailable isVerified verificationStatus status avatar avgRating totalReviews languages createdAt';
     const [list, total] = await Promise.all([
       Physiotherapist.find()
         .select(listSelect)
@@ -128,7 +128,7 @@ export async function listPhysios(req, res, next) {
 }
 
 const NEARBY_LEAN_SELECT =
-  'name specialization experience pricePerSession pricePerSessionMax location coordinates availability isAvailable verificationStatus isVerified verification avatar avgRating totalReviews geoPoint';
+  'name specialization experience pricePerSession pricePerSessionMax location coordinates availability isAvailable verificationStatus isVerified verification avatar avgRating totalReviews languages geoPoint';
 
 function toNearbyDto(p, distanceKmVal) {
   return {
@@ -151,6 +151,7 @@ function toNearbyDto(p, distanceKmVal) {
     avatar: p.avatar || '',
     avgRating: Number(p.avgRating) || 0,
     totalReviews: Number(p.totalReviews) || 0,
+    languages: Array.isArray(p.languages) ? p.languages : [],
   };
 }
 

@@ -6,6 +6,7 @@ import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
+import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
 import {
   bookingAmountRupees,
   computeMarketplaceSplit,
@@ -39,6 +40,10 @@ import { findActiveManagerCare } from '../utils/activeManagerCare.js';
 import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
 import { allocateBookingCode } from '../utils/bookingCode.js';
 import { readPagination, paginationMeta } from '../utils/pagination.js';
+import {
+  fireAssignmentWhatsApp,
+  notifyOnManagerAssigned,
+} from '../utils/assignmentWhatsApp.js';
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -260,12 +265,22 @@ export async function createBooking(req, res, next) {
         normalizedTimeSlot +
         (selectedPhysio ? '.' : '. We are assigning a physiotherapist.'),
     });
-    await sendWhatsApp({
-      to: user.phone,
-      message: selectedPhysio
-        ? `Thanks — your booking is created with ${selectedPhysio.name}.`
-        : 'Thanks — we received your booking. Our team will assign a physiotherapist shortly.',
-    });
+    if (selectedPhysio) {
+      await notifyAppointmentConfirmedWhatsApp({
+        phone: user.phone,
+        name: user.name || name,
+        bookedWith: selectedPhysio.name || 'PhysiOkhom',
+        date,
+        time: normalizedTimeSlot,
+        booking: populated,
+        bookingId: booking._id,
+      });
+    } else {
+      await sendWhatsApp({
+        to: user.phone,
+        message: 'Thanks — we received your booking. Our team will assign a physiotherapist shortly.',
+      });
+    }
     if (selectedPhysio?.phone) {
       const when = `${date} ${normalizedTimeSlot}`;
       await sendSMS({
@@ -859,6 +874,11 @@ export async function requestHomeBooking(req, res, next) {
       .populate('zoneId', 'name')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
+
+    if (out?.managerId) {
+      fireAssignmentWhatsApp('manager-assigned-auto', () => notifyOnManagerAssigned(out));
+    }
+
     return res.status(201).json(out);
   } catch (err) {
     next(err);
@@ -1340,6 +1360,16 @@ export async function verifyOfflinePayment(req, res, next) {
       .populate('userId', 'name phone location coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
+
+    if (out?.userId?.phone) {
+      await notifyPaymentReceivedWhatsApp({
+        phone: out.userId.phone,
+        name: out.userId.name || out.name,
+        amount: rupees,
+        booking: out,
+      });
+    }
+
     return res.json(out);
   } catch (err) {
     next(err);

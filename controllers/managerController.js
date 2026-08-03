@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
+import Clinic from '../models/Clinic.js';
 import Payment from '../models/Payment.js';
 import ManagerLedgerEntry from '../models/ManagerLedgerEntry.js';
 import ServiceZone from '../models/ServiceZone.js';
@@ -29,6 +30,7 @@ import { deriveBookingPaymentSummary, recomputeBookingPaymentRollup } from '../u
 import { persistPaymentProofImage } from '../utils/paymentImagePersist.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
+import { notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
 import PlatformSettings from '../models/PlatformSettings.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import {
@@ -401,8 +403,13 @@ export async function managerAssignPhysio(req, res, next) {
     if (booking.zoneId) {
       const zone = await ServiceZone.findById(booking.zoneId).select('physioIds').lean();
       if (zone?.physioIds?.length) {
-        const allowed = zone.physioIds.some((pid) => String(pid) === String(physioId));
-        if (!allowed) {
+        const inZone = zone.physioIds.some((pid) => String(pid) === String(physioId));
+        let inClinicRoster = false;
+        if (!inZone && booking.clinicId) {
+          const clinic = await Clinic.findById(booking.clinicId).select('physioIds').lean();
+          inClinicRoster = (clinic?.physioIds || []).some((pid) => String(pid) === String(physioId));
+        }
+        if (!inZone && !inClinicRoster) {
           return res.status(400).json({ message: 'Physiotherapist is not in this service zone' });
         }
       }
@@ -486,6 +493,23 @@ export async function managerAssignPhysio(req, res, next) {
         data: { kind: 'booking_assigned', bookingId: String(booking._id) },
       });
     });
+
+    try {
+      const patientUser = await User.findById(booking.userId).select('phone name').lean();
+      if (patientUser?.phone) {
+        await notifyAppointmentConfirmedWhatsApp({
+          phone: patientUser.phone,
+          name: patientUser.name || booking.name,
+          bookedWith: physio.name || 'PhysiOkhom',
+          date: booking.date,
+          time: booking.timeSlot,
+          booking,
+          bookingId: booking._id,
+        });
+      }
+    } catch (_waErr) {
+      // non-fatal
+    }
 
     const out = await populateBooking(Booking.findById(id));
     return res.json(out);
@@ -954,15 +978,20 @@ export async function listZonePhysios(req, res, next) {
     const managerId = req.user?.id;
     const { bookingId } = req.query || {};
     let physioIds = [];
+    let clinicRosterIds = [];
 
     if (bookingId && mongoose.isValidObjectId(bookingId)) {
-      const booking = await Booking.findById(bookingId).select('zoneId managerId').lean();
+      const booking = await Booking.findById(bookingId).select('zoneId managerId clinicId').lean();
       if (!booking || booking.managerId?.toString() !== String(managerId)) {
         return res.status(403).json({ message: 'Forbidden' });
       }
       if (booking.zoneId) {
         const zone = await ServiceZone.findById(booking.zoneId).select('physioIds').lean();
         physioIds = zone?.physioIds || [];
+      }
+      if (booking.clinicId) {
+        const clinic = await Clinic.findById(booking.clinicId).select('physioIds').lean();
+        clinicRosterIds = clinic?.physioIds || [];
       }
     } else {
       const zones = await ServiceZone.find({ isActive: true, managerIds: managerId }).select('physioIds').lean();
@@ -973,17 +1002,39 @@ export async function listZonePhysios(req, res, next) {
       physioIds = [...set];
     }
 
-    const query = physioIds.length
-      ? { _id: { $in: physioIds }, verificationStatus: 'approved' }
-      : { verificationStatus: 'approved' };
+    // Empty zone physioIds = all approved. When zone is restricted, also include clinic roster.
+    let query = { verificationStatus: 'approved' };
+    if (physioIds.length) {
+      const idSet = new Set(physioIds.map(String));
+      for (const pid of clinicRosterIds) idSet.add(String(pid));
+      query = { _id: { $in: [...idSet] }, verificationStatus: 'approved' };
+    }
 
     const physios = await Physiotherapist.find(query)
       .select(
-        'name specialization location phone pricePerSession pricePerSessionMax experience avatar coordinates avgRating totalReviews isVerified verificationStatus availability isAvailable',
+        'name specialization location phone pricePerSession pricePerSessionMax experience avatar coordinates avgRating totalReviews isVerified verificationStatus availability isAvailable clinicId',
       )
       .lean();
 
-    return res.json({ physios });
+    const clinicIds = [
+      ...new Set(physios.map((p) => (p.clinicId ? String(p.clinicId) : '')).filter(Boolean)),
+    ];
+    const clinicNameById = new Map();
+    if (clinicIds.length) {
+      const clinics = await Clinic.find({ _id: { $in: clinicIds } }).select('name').lean();
+      for (const c of clinics) clinicNameById.set(String(c._id), c.name || '');
+    }
+
+    const enriched = physios.map((p) => {
+      const cid = p.clinicId ? String(p.clinicId) : null;
+      return {
+        ...p,
+        clinicId: cid,
+        clinicName: cid ? clinicNameById.get(cid) || '' : '',
+      };
+    });
+
+    return res.json({ physios: enriched });
   } catch (err) {
     next(err);
   }
