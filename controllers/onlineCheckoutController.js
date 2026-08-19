@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import Physiotherapist from '../models/Physiotherapist.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
 import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
+import { fireAdminNewBookingWhatsApp } from '../utils/assignmentWhatsApp.js';
 import {
   computeMarketplaceSplit,
   creditPhysioWalletOnline,
@@ -330,6 +331,8 @@ async function finalizeLockedCheckoutSession(res, locked, verifiedOrderId, verif
     .populate('userId', 'name phone location coordinates')
     .populate('physioId', 'name specialization location phone')
     .lean();
+
+  fireAdminNewBookingWhatsApp(populated);
 
   return res.json(populated);
 }

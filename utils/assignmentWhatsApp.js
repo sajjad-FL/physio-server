@@ -3,6 +3,8 @@ import Clinic from '../models/Clinic.js';
 import {
   isWhatsAppConfigured,
   notifyAppointmentConfirmedWhatsApp,
+  notifyManagerAssignedPatientWhatsApp,
+  notifyAdminNewBookingWhatsApp,
   notifyPhysioUpcomingVisitWhatsApp,
 } from './authKeyOtp.js';
 
@@ -59,7 +61,7 @@ function clinicFromBooking(booking) {
 
 /**
  * After care manager is assigned (admin / auto-zone):
- * - Patient ← appointment confirmation (26916), bookedWith = manager name
+ * - Patient ← manager_patient_assigned (28532)
  * - Manager ← upcoming-style (26927), new case reminder
  */
 export async function notifyOnManagerAssigned(booking) {
@@ -76,17 +78,22 @@ export async function notifyOnManagerAssigned(booking) {
   let patientOk = false;
   let managerOk = false;
 
+  console.log(
+    `[WhatsApp][manager-assigned] booking=${booking?._id} patientPhone=${patient.phone ? 'yes' : 'no'} manager=${manager?.name || '?'}`,
+  );
+
   if (patient.phone) {
-    patientOk = await notifyAppointmentConfirmedWhatsApp({
+    patientOk = await notifyManagerAssignedPatientWhatsApp({
       phone: patient.phone,
       name: patient.name,
-      bookedWith: manager?.name || 'your care manager',
+      managerName: manager?.name || 'your care manager',
       appointmentType: type,
       date: booking.date,
       time: booking.timeSlot,
       booking,
-      bookingId: booking._id,
     });
+  } else {
+    console.warn('[WhatsApp][manager-assigned] skip patient: no phone on booking.userId');
   }
 
   if (manager?.phone) {
@@ -181,6 +188,86 @@ export async function notifyOnClinicAssigned(booking) {
   }
 
   return { patient: patientOk, clinic: clinicSent };
+}
+
+async function resolveAdminNotifyPhones() {
+  const phones = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const digits = String(raw || '').replace(/\D/g, '').slice(-10);
+    if (digits.length !== 10 || seen.has(digits)) return;
+    seen.add(digits);
+    phones.push(digits);
+  };
+
+  const envList = String(process.env.ADMIN_WHATSAPP_PHONES || process.env.ADMIN_PHONE || '')
+    .split(/[,;\s]+/)
+    .filter(Boolean);
+  for (const p of envList) push(p);
+
+  const admins = await User.find({ role: 'admin' }).select('phone').lean();
+  for (const a of admins) push(a.phone);
+
+  return phones;
+}
+
+/**
+ * Notify every admin WhatsApp when a patient (or staff) creates a booking.
+ * Uses dedicated admin template (FAST2SMS_MESSAGE_ID_ADMIN_BOOKING) when configured.
+ */
+export async function notifyAdminOnNewBooking(booking) {
+  if (!isWhatsAppConfigured() || !booking) return 0;
+
+  let patient = patientFromBooking(booking);
+  let locationBooking = booking;
+  if (booking.userId && (typeof booking.userId !== 'object' || !booking.userId.phone)) {
+    const id =
+      typeof booking.userId === 'object' && booking.userId?._id
+        ? booking.userId._id
+        : booking.userId;
+    const u = await User.findById(id).select('name phone location pincode').lean();
+    if (u) {
+      patient = { phone: u.phone, name: u.name || patient.name };
+      locationBooking = { ...booking, userId: u };
+    }
+  }
+
+  const phones = await resolveAdminNotifyPhones();
+  if (!phones.length) {
+    console.warn('[WhatsApp][admin-new-booking] no admin phone configured — set ADMIN_WHATSAPP_PHONES in .env');
+    return 0;
+  }
+
+  const bookingRef = booking.bookingCode || booking._id || '';
+  const type = visitLabel(booking);
+  console.log(
+    `[WhatsApp][admin-new-booking] notifying ${phones.length} admin(s) for ${type}${bookingRef ? ` (${bookingRef})` : ''}`,
+  );
+  let sent = 0;
+  for (const phone of phones) {
+    const ok = await notifyAdminNewBookingWhatsApp({
+      phone,
+      patientName: patient.name || 'Patient',
+      serviceType: type,
+      date: booking.date,
+      time: booking.timeSlot,
+      location: patientLocationLabel(locationBooking),
+      bookingId: booking._id || booking.id || booking.bookingCode,
+    });
+    if (ok) sent += 1;
+    else console.warn(`[WhatsApp][admin-new-booking] failed for admin phone ending ${String(phone).slice(-4)}`);
+  }
+  if (sent > 0) {
+    console.log(`[WhatsApp][admin-new-booking] sent to ${sent}/${phones.length} admin(s): ${type}`);
+  } else {
+    console.warn('[WhatsApp][admin-new-booking] send failed for all admin numbers');
+  }
+  return sent;
+}
+
+/** Fire-and-forget admin WhatsApp for a new booking. */
+export function fireAdminNewBookingWhatsApp(booking) {
+  fireAssignmentWhatsApp('admin-new-booking', () => notifyAdminOnNewBooking(booking));
 }
 
 /** Non-blocking wrapper — never throws to the request path. */

@@ -31,6 +31,7 @@ import { persistPaymentProofImage } from '../utils/paymentImagePersist.js';
 import { fireBookingPush, notifyExpoUsers } from '../utils/expoPush.js';
 import { findUserIdForPhysioProfile } from '../utils/expoPush.js';
 import { notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
+import { fireAdminNewBookingWhatsApp } from '../utils/assignmentWhatsApp.js';
 import PlatformSettings from '../models/PlatformSettings.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import {
@@ -52,7 +53,7 @@ const populateBooking = (q) =>
   q
     .populate('userId', 'name phone location coordinates pincode')
     .populate('managerId', 'name phone')
-    .populate('clinicId', 'name address phone')
+    .populate('clinicId', 'name address phone coordinates')
     .populate('zoneId', 'name pincodes')
     .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
     .lean();
@@ -1256,6 +1257,7 @@ export async function managerSuggestTechnique(req, res, next) {
 
     const out = await populateBooking(Booking.findById(booking._id));
     const { payments, paymentSummary } = await attachPaymentsAndSummary(out);
+    fireAdminNewBookingWhatsApp(out);
     return res.status(201).json({ ...out, payments, paymentSummary });
   } catch (err) {
     next(err);

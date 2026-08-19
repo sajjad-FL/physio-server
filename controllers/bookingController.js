@@ -42,6 +42,7 @@ import { allocateBookingCode } from '../utils/bookingCode.js';
 import { readPagination, paginationMeta } from '../utils/pagination.js';
 import {
   fireAssignmentWhatsApp,
+  fireAdminNewBookingWhatsApp,
   notifyOnManagerAssigned,
 } from '../utils/assignmentWhatsApp.js';
 
@@ -293,6 +294,8 @@ export async function createBooking(req, res, next) {
       });
     }
 
+    fireAdminNewBookingWhatsApp(populated);
+
     return res.status(201).json(populated);
   } catch (err) {
     next(err);
@@ -484,7 +487,7 @@ export async function getAdminBookingById(req, res, next) {
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates pincode')
       .populate('managerId', 'name phone')
-      .populate('clinicId', 'name address phone pincode')
+      .populate('clinicId', 'name address phone pincode coordinates')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
 
@@ -508,7 +511,7 @@ export async function getBookingById(req, res, next) {
     const booking = await Booking.findById(id)
       .populate('userId', 'name phone location coordinates pincode')
       .populate('managerId', 'name phone')
-      .populate('clinicId', 'name address phone pincode')
+      .populate('clinicId', 'name address phone pincode coordinates')
       .populate(
         'physioId',
         'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews'
@@ -879,6 +882,8 @@ export async function requestHomeBooking(req, res, next) {
       fireAssignmentWhatsApp('manager-assigned-auto', () => notifyOnManagerAssigned(out));
     }
 
+    fireAdminNewBookingWhatsApp(out);
+
     return res.status(201).json(out);
   } catch (err) {
     next(err);
@@ -969,6 +974,7 @@ export async function requestClinicBooking(req, res, next) {
       .populate('userId', 'name phone location coordinates pincode')
       .populate('clinicId', 'name address phone')
       .lean();
+    fireAdminNewBookingWhatsApp(out);
     return res.status(201).json(out);
   } catch (err) {
     next(err);
@@ -1160,6 +1166,7 @@ export async function requestTechniqueBooking(req, res, next) {
       .populate('zoneId', 'name')
       .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
       .lean();
+    fireAdminNewBookingWhatsApp(out);
     return res.status(201).json(out);
   } catch (err) {
     next(err);

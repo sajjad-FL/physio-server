@@ -89,10 +89,10 @@ Hi {{1}}, PhysiOkhom has received your {{4}} booking for {{2}} at {{3}}. We will
 | **Category** | UTILITY |
 | **Language** | en_US |
 | **When** | Appointment confirmed (physio accept / online paid) **and** patient notified on manager or clinic assign |
-| **AuthKey Message ID (`wid`)** | `26916` (`FAST2SMS_MESSAGE_ID_APPOINTMENT`) |
+| **Message ID** | `26916` (`FAST2SMS_MESSAGE_ID_APPOINTMENT`) |
 | **Meta Template ID** | `1354025180221960` |
 
-**Body (update in Fast2SMS / Meta — keep same 5 variables)**
+**Body (paste in Fast2SMS / Meta — same 5 variables)**
 
 ```text
 Hello {{1}},
@@ -104,22 +104,23 @@ Your {{3}} on {{4}} at {{5}} is confirmed.
 
 **Variables**
 
-| Var | Meaning | Example |
-|-----|---------|---------|
+| Var | Meaning | Example values |
+|-----|---------|----------------|
 | `{{1}}` | Patient name | `Riya` |
-| `{{2}}` | Physio / care manager / clinic name | `Dr. Ankit Sharma` / `Priya Das` / `Kokrajhar Clinic` |
-| `{{3}}` | Visit type | `home visit` / `clinic visit` / `online consultation` |
+| `{{2}}` | Physio / care manager / clinic | `Dr. Ankit Sharma` / `Priya Das` / `Kokrajhar Clinic` |
+| `{{3}}` | Visit type | `home visit` · `clinic visit` · `online consultation` |
 | `{{4}}` | Date | `22 Jul 2026` |
 | `{{5}}` | Time | `10:00 AM` |
 
-**Notes:** Same message ID `26916` — edit the approved template body in Fast2SMS/Meta (or submit a new version if Meta requires it). App code already sends `{{1}}…{{5}}` in this order; no server change needed after you update the template text.
+**Visit-type values sent by the app (`{{3}}`):**
 
-**Was:**
-```text
-Hello {{1}},
-Thank you for booking with {{2}}.
-Your appointment for {{3}} on {{4}} at {{5}} is confirmed.
-```
+| Booking | `{{3}}` string |
+|---------|----------------|
+| Home | `home visit` |
+| Clinic | `clinic visit` |
+| Online | `online consultation` |
+
+**Notes:** One template covers all three modes — do not create separate Meta templates per visit type. Server already maps `serviceType` → these labels in `authKeyOtp.js` / `assignmentWhatsApp.js`.
 ---
 
 ### 3. `care_plan_ready`

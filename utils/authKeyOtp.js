@@ -9,6 +9,16 @@ const DEFAULT_PAYMENT_MESSAGE_ID = '26922';
 const DEFAULT_APPOINTMENT_MESSAGE_ID = '26916';
 const DEFAULT_FEEDBACK_MESSAGE_ID = '26926';
 const DEFAULT_UPCOMING_MESSAGE_ID = '26927';
+const DEFAULT_ADMIN_BOOKING_MESSAGE_ID = '28373';
+const DEFAULT_MANAGER_ASSIGNED_MESSAGE_ID = '28532';
+
+function adminBookingMessageId() {
+  return String(
+    process.env.FAST2SMS_MESSAGE_ID_ADMIN_BOOKING ||
+      process.env.AUTHKEY_WID_ADMIN_BOOKING ||
+      DEFAULT_ADMIN_BOOKING_MESSAGE_ID,
+  ).trim();
+}
 
 function getApiKey() {
   return String(
@@ -239,6 +249,9 @@ export async function notifyAppointmentConfirmedWhatsApp({
   void bookingId;
 
   try {
+    console.log(
+      `[WhatsApp][appointment_confirmation] sending message_id=${messageId} to=***${mobile.slice(-4)} bookedWith=${withName}`,
+    );
     await sendFast2SmsTemplate({
       mobile,
       messageId,
@@ -249,6 +262,102 @@ export async function notifyAppointmentConfirmedWhatsApp({
     console.warn('[WhatsApp][appointment_confirmation]', err?.message || err);
     return false;
   }
+}
+
+/**
+ * Patient WhatsApp after care manager is assigned.
+ * Template: manager_patient_assigned_appointment_confirmation_1 (message_id 28532)
+ * Body: {{1}} patient · {{2}} manager · {{3}} service · {{4}} date · {{5}} time
+ * Button "View details": 6th variable = booking id (Meta Website URL must end with {{1}})
+ *   https://physiokhom.com/dashboard/bookings/{{1}}
+ */
+export async function notifyManagerAssignedPatientWhatsApp({
+  phone,
+  name,
+  managerName,
+  appointmentType,
+  date,
+  time,
+  booking,
+}) {
+  if (!isWhatsAppConfigured()) return false;
+  const mobile = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (mobile.length !== 10) return false;
+
+  // Prefer Fast2SMS message_id — this is what delivers the approved patient template body.
+  const messageId = String(
+    process.env.FAST2SMS_MESSAGE_ID_MANAGER_ASSIGNED || DEFAULT_MANAGER_ASSIGNED_MESSAGE_ID,
+  ).trim() || DEFAULT_MANAGER_ASSIGNED_MESSAGE_ID;
+  const templateName =
+    process.env.FAST2SMS_MANAGER_ASSIGNED_TEMPLATE_NAME ||
+    'manager_patient_assigned_appointment_confirmation_1';
+  const languageCodes = String(
+    process.env.FAST2SMS_MANAGER_ASSIGNED_LANGUAGE || 'en_US,en',
+  )
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const patientName = String(name || booking?.userId?.name || booking?.name || 'there').trim() || 'there';
+  const cmName = String(managerName || 'your care manager').trim() || 'your care manager';
+  const typeLabel = String(appointmentType || visitTypeLabel(booking)).trim() || 'home visit';
+  const issue = String(booking?.issue || '').trim();
+  const serviceLabel = issue ? `${typeLabel}: ${issue}`.slice(0, 60) : typeLabel;
+  const dateLabel = formatApptDate(date || booking?.date);
+  const timeLabel = formatApptTime(time || booking?.timeSlot);
+  const vars = [patientName, cmName, serviceLabel, dateLabel, timeLabel];
+
+  const idSuffix = String(booking?._id || booking?.id || '')
+    .trim()
+    .replace(/^https?:\/\/[^/]+\/(?:dashboard|admin)\/bookings\//i, '')
+    .replace(/^\//, '');
+
+  if (!idSuffix) {
+    console.warn('[WhatsApp][manager_assigned_patient] missing booking id — View details button will break');
+  }
+
+  // Body + optional dynamic URL button suffix (6th value)
+  const variables = idSuffix ? [...vars, idSuffix] : [...vars];
+
+  console.log(
+    `[WhatsApp][manager_assigned_patient] sending message_id=${messageId} to=***${mobile.slice(-4)} buttonSuffix=${idSuffix || '(none)'} vars=${JSON.stringify(variables)}`,
+  );
+
+  try {
+    await sendFast2SmsTemplate({
+      mobile,
+      messageId,
+      variables,
+    });
+    console.log(`[WhatsApp][manager_assigned_patient] ok message_id=${messageId}`);
+    return true;
+  } catch (err) {
+    console.warn('[WhatsApp][manager_assigned_patient] simple API failed, trying Meta CTA:', err?.message || err);
+  }
+
+  // Fallback only if message_id send fails
+  for (const languageCode of languageCodes) {
+    try {
+      await sendTemplateWithUrlButtonMeta({
+        mobile,
+        templateName,
+        languageCode,
+        bodyVars: vars,
+        buttonUrlSuffix: idSuffix || undefined,
+      });
+      console.log(
+        `[WhatsApp][manager_assigned_patient] ok via Meta CTA lang=${languageCode} button=${idSuffix || 'none'}`,
+      );
+      return true;
+    } catch (metaErr) {
+      console.warn(
+        `[WhatsApp][manager_assigned_patient] Meta CTA lang=${languageCode} failed:`,
+        metaErr?.message || metaErr,
+      );
+    }
+  }
+
+  return false;
 }
 
 export async function notifyFeedbackSurveyWhatsApp({
@@ -319,7 +428,152 @@ export async function notifyPhysioUpcomingVisitWhatsApp({
     });
     return true;
   } catch (err) {
-    console.warn('[WhatsApp][physio_upcoming]', err?.message || err);
+    console.warn(`[WhatsApp][physio_upcoming] to=${mobile}`, err?.message || err);
     return false;
+  }
+}
+
+/**
+ * Send a template via Meta Graph format (body + optional dynamic URL button).
+ * Required when "View details" is a dynamic CTA — simple GET API does not set the button suffix.
+ * @see https://docs.fast2sms.com/reference/sendtemplatectabutton
+ */
+async function sendTemplateWithUrlButtonMeta({
+  mobile,
+  templateName,
+  languageCode = 'en_US',
+  bodyVars,
+  buttonUrlSuffix,
+}) {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error('WhatsApp is not configured on this server.');
+  if (!templateName) throw new Error('WhatsApp template name is missing.');
+
+  const phoneNumberId = getPhoneNumberId();
+  const to = `91${String(mobile).replace(/\D/g, '').slice(-10)}`;
+  const apiVersion = process.env.FAST2SMS_GRAPH_VERSION || 'v24.0';
+
+  const components = [
+    {
+      type: 'body',
+      parameters: bodyVars.map((text) => ({ type: 'text', text: String(text ?? '') })),
+    },
+  ];
+  if (buttonUrlSuffix) {
+    const suffix = String(buttonUrlSuffix);
+    // Meta Cloud API uses type "text"; some Fast2SMS examples use "payload".
+    components.push({
+      type: 'button',
+      sub_type: 'url',
+      index: '0',
+      parameters: [{ type: 'text', text: suffix }],
+    });
+  }
+
+  const url = `${FAST2SMS_SEND_URL}/${apiVersion}/${phoneNumberId}/messages`;
+  const response = await axios.post(
+    url,
+    {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components,
+      },
+    },
+    {
+      timeout: 20000,
+      headers: {
+        Authorization: apiKey,
+        'Content-Type': 'application/json',
+      },
+      validateStatus: () => true,
+    },
+  );
+
+  const data = response.data;
+  if (response.status >= 200 && response.status < 300 && data?.messages?.[0]?.id) {
+    return data;
+  }
+  if (isFast2SmsSuccess(data)) return data;
+
+  const detail =
+    data?.error?.message ||
+    (Array.isArray(data?.message) ? data.message.join(' ') : data?.message) ||
+    (typeof data === 'string' ? data : null) ||
+    `HTTP ${response.status}`;
+  throw new Error(`WhatsApp CTA send failed: ${detail}`);
+}
+
+async function sendAdminBookingTemplateMeta({ mobile, bodyVars, buttonUrlSuffix }) {
+  return sendTemplateWithUrlButtonMeta({
+    mobile,
+    templateName:
+      process.env.FAST2SMS_ADMIN_BOOKING_TEMPLATE_NAME || 'appointment_confirmation_1',
+    languageCode: process.env.FAST2SMS_ADMIN_BOOKING_LANGUAGE || 'en_US',
+    bodyVars,
+    buttonUrlSuffix,
+  });
+}
+
+/**
+ * Admin alert when a patient creates a new booking.
+ * Template: appointment_confirmation_1 (message_id 28373)
+ * Body: {{1}} patient · {{2}} service · {{3}} date · {{4}} time · {{5}} location
+ * Button "View details" (dynamic URL): suffix = booking id
+ *   Meta Website URL MUST be: https://physiokhom.com/admin/bookings/{{1}}
+ *   (not example.com — that domain is baked into the approved template)
+ */
+export async function notifyAdminNewBookingWhatsApp({
+  phone,
+  patientName,
+  serviceType,
+  date,
+  time,
+  location,
+  bookingId,
+}) {
+  if (!isWhatsAppConfigured()) return false;
+  const mobile = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (mobile.length !== 10) return false;
+
+  const idSuffix = String(bookingId || '')
+    .trim()
+    .replace(/^https?:\/\/[^/]+\/admin\/bookings\//i, '')
+    .replace(/^\//, '');
+
+  const bodyVars = [
+    String(patientName || 'Patient').trim().slice(0, 60),
+    String(serviceType || 'physiotherapy visit').trim().slice(0, 60),
+    formatApptDate(date),
+    formatApptTime(time),
+    String(location || 'see app').trim().slice(0, 60),
+  ];
+
+  try {
+    await sendAdminBookingTemplateMeta({
+      mobile,
+      bodyVars,
+      buttonUrlSuffix: idSuffix || undefined,
+    });
+    return true;
+  } catch (metaErr) {
+    console.warn(`[WhatsApp][admin_new_booking] Meta CTA failed, trying simple API:`, metaErr?.message || metaErr);
+    try {
+      const variables = [...bodyVars];
+      if (idSuffix) variables.push(idSuffix);
+      await sendFast2SmsTemplate({
+        mobile,
+        messageId: adminBookingMessageId() || DEFAULT_ADMIN_BOOKING_MESSAGE_ID,
+        variables,
+      });
+      return true;
+    } catch (err) {
+      console.warn(`[WhatsApp][admin_new_booking] to=${mobile}`, err?.message || err);
+      return false;
+    }
   }
 }

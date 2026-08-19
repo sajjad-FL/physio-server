@@ -123,6 +123,16 @@ async function main() {
   }
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);
+    const adminPhones = String(process.env.ADMIN_WHATSAPP_PHONES || '')
+      .split(/[,;\s]+/)
+      .filter((p) => p.replace(/\D/g, '').length >= 10);
+    if (process.env.FAST2SMS_API_KEY) {
+      console.log(
+        `[WhatsApp] Fast2SMS ready. Admin booking alerts: ${adminPhones.length ? `${adminPhones.length} number(s) in ADMIN_WHATSAPP_PHONES` : 'none in env (uses role=admin user phones only)'}`,
+      );
+    } else {
+      console.warn('[WhatsApp] FAST2SMS_API_KEY missing — OTP and admin alerts disabled');
+    }
     startCronJobs();
   });
 }
