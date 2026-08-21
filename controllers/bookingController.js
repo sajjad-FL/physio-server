@@ -1602,6 +1602,16 @@ export async function rescheduleBooking(req, res, next) {
       if (booking.date === date && booking.timeSlot === normalizedTimeSlot) {
         return res.status(400).json({ message: 'Already scheduled for this slot' });
       }
+      if (
+        Array.isArray(booking.schedule) &&
+        booking.schedule.some(
+          (s) => String(s.date) === String(date) && String(s.time) === normalizedTimeSlot,
+        )
+      ) {
+        return res.status(400).json({
+          message: 'Another visit on this booking already uses that date and time',
+        });
+      }
       const conflict = await hasPhysioSlotConflict({
         bookingId: booking._id,
         physioId: booking.physioId,
@@ -1641,6 +1651,18 @@ export async function rescheduleBooking(req, res, next) {
 
       if (oldDate === date && oldTime === normalizedTimeSlot) {
         return res.status(400).json({ message: 'Already scheduled for this slot' });
+      }
+
+      if (hasSchedule) {
+        const duplicateInSchedule = booking.schedule.some((s, i) => {
+          if (i === scheduleIndex) return false;
+          return String(s.date) === String(date) && String(s.time) === normalizedTimeSlot;
+        });
+        if (duplicateInSchedule) {
+          return res.status(400).json({
+            message: 'Another visit on this booking already uses that date and time',
+          });
+        }
       }
 
       const updatesPrimarySlot = !hasSchedule || scheduleIndex === 0;

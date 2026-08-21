@@ -1153,6 +1153,17 @@ export async function managerSuggestTechnique(req, res, next) {
       }
     }
 
+    const seenSlots = new Set();
+    for (let i = 0; i < sessions; i++) {
+      const slotKey = `${visitDates[i]}|${visitTimes[i]}`;
+      if (seenSlots.has(slotKey)) {
+        return res.status(400).json({
+          message: 'Each visit must have a unique date and time — duplicate appointments are not allowed',
+        });
+      }
+      seenSlots.add(slotKey);
+    }
+
     const platformCapacity = await getBookablePhysioCount();
     if (platformCapacity < 1) {
       return res.status(503).json({

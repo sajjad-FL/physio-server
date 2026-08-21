@@ -84,6 +84,7 @@ export function validateHomePlanInput(body, { requirePhysioRate = null, excludeA
   }
   const schedule = [];
   const blockedDate = String(excludeAssessmentDate || '').trim();
+  const seenSlots = new Set();
   for (const item of body.schedule) {
     const date = String(item?.date || '').trim();
     const time = String(item?.time || '').trim();
@@ -94,6 +95,11 @@ export function validateHomePlanInput(body, { requirePhysioRate = null, excludeA
           'The initial assessment visit date is complimentary and cannot be included in the treatment schedule.',
       };
     }
+    const slotKey = `${date}|${time}`;
+    if (seenSlots.has(slotKey)) {
+      return { error: 'Each visit must have a unique date and time — duplicate appointments are not allowed' };
+    }
+    seenSlots.add(slotKey);
     schedule.push({ date, time });
   }
   if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
