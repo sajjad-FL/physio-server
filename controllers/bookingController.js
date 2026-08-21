@@ -6,7 +6,7 @@ import Review from '../models/Review.js';
 import Payment from '../models/Payment.js';
 import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
 import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
-import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp } from '../utils/authKeyOtp.js';
+import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp, notifyVisitRescheduledWhatsApp } from '../utils/authKeyOtp.js';
 import {
   bookingAmountRupees,
   computeMarketplaceSplit,
@@ -1681,6 +1681,9 @@ export async function rescheduleBooking(req, res, next) {
       throw e;
     }
 
+    const actor =
+      isAdmin ? 'admin' : isManager ? 'manager' : physioId ? 'physio' : 'unknown';
+
     fireBookingPush(async () => {
       const patientId = booking.userId?.toString();
       const physioLoginId = booking.physioId
@@ -1707,6 +1710,47 @@ export async function rescheduleBooking(req, res, next) {
           body: `Your physiotherapist moved the visit to ${summary}.`,
           data,
         });
+      }
+    });
+
+    // Patient WhatsApp for every reschedule (physio, care manager, or admin)
+    fireBookingPush(async () => {
+      try {
+        const patientUser = await User.findById(booking.userId).select('phone name').lean();
+        if (!patientUser?.phone) {
+          console.warn(
+            `[WhatsApp][visit_rescheduled] skip — no patient phone booking=${booking._id} actor=${actor}`,
+          );
+          return;
+        }
+
+        let rescheduledBy = 'PhysiOkhom';
+        if (isManager) {
+          const mgr = await User.findById(managerUserId).select('name').lean();
+          rescheduledBy = String(mgr?.name || '').trim() || 'your care manager';
+        } else if (physioId || (!isAdmin && booking.physioId)) {
+          const physioDocId = physioId || booking.physioId;
+          const physio = await Physiotherapist.findById(physioDocId).select('name').lean();
+          rescheduledBy = String(physio?.name || '').trim() || 'your physiotherapist';
+        } else if (isAdmin) {
+          rescheduledBy = 'PhysiOkhom';
+        }
+
+        console.log(
+          `[WhatsApp][visit_rescheduled] actor=${actor} booking=${booking._id} by=${rescheduledBy} date=${date} time=${normalizedTimeSlot}`,
+        );
+
+        await notifyVisitRescheduledWhatsApp({
+          phone: patientUser.phone,
+          name: patientUser.name,
+          rescheduledBy,
+          date,
+          time: normalizedTimeSlot,
+          booking,
+          bookingId: booking._id,
+        });
+      } catch (waErr) {
+        console.warn(`[WhatsApp][visit_rescheduled] actor=${actor}`, waErr?.message || waErr);
       }
     });
 

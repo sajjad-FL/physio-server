@@ -8,6 +8,7 @@ import {
   patchPayoutDetails,
   registerExpoPushToken,
   getWalletSummary,
+  deleteProfile,
 } from '../controllers/profileController.js';
 
 const router = Router();
@@ -27,5 +28,6 @@ router.post('/expo-push-token', authenticateJwt, registerExpoPushToken);
 router.patch('/avatar', authenticateJwt, avatarUploadMiddleware, patchAvatar);
 router.patch('/payout', authenticateJwt, patchPayoutDetails);
 router.patch('/', authenticateJwt, patchProfile);
+router.delete('/', authenticateJwt, deleteProfile);
 
 export default router;

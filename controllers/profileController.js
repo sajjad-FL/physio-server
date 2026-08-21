@@ -10,6 +10,8 @@ import { normalizeRole } from '../utils/userRole.js';
 import { normalizePatientGender } from '../utils/patientGender.js';
 import { normalizePayoutDisplayName, normalizePayoutUpiId } from '../utils/payoutUpi.js';
 import WithdrawRequest from '../models/WithdrawRequest.js';
+import ShopCart from '../models/ShopCart.js';
+import Dispute from '../models/Dispute.js';
 import { ensureCompressedMulterImage } from '../utils/compressImageBuffer.js';
 
 /** Patients need name, DOB, gender, and a non-trivial address/location before platform features unlock. */
@@ -463,6 +465,57 @@ export async function patchAvatar(req, res, next) {
     return res.json({
       avatarUrl: user.avatarUrl,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteProfile(req, res, next) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const role = normalizeRole(user);
+    if (role !== 'user') {
+      return res.status(403).json({ message: 'Only patient accounts can be deleted here' });
+    }
+
+    if (user.physioId) {
+      return res.status(409).json({ message: 'This account cannot be deleted from profile settings' });
+    }
+
+    const hasActiveBookings = await Booking.exists({
+      userId,
+      $or: [
+        { status: { $ne: 'completed' } },
+        { paymentStatus: { $in: ['held', 'pending'] } },
+      ],
+    });
+    if (hasActiveBookings) {
+      return res.status(409).json({
+        message: 'Complete or cancel active bookings before deleting your account',
+      });
+    }
+
+    const openDispute = await Dispute.exists({
+      raiserUserId: userId,
+      status: { $in: ['open', 'under_review'] },
+    });
+    if (openDispute) {
+      return res.status(409).json({
+        message: 'Resolve open disputes before deleting your account',
+      });
+    }
+
+    const prevAvatar = user.avatarUrl;
+    await ShopCart.deleteOne({ userId });
+    unlinkAvatarFile(prevAvatar);
+    await User.findByIdAndDelete(userId);
+
+    return res.json({ ok: true, message: 'Account deleted' });
   } catch (err) {
     next(err);
   }

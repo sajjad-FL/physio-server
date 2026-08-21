@@ -148,13 +148,72 @@ Hi {{1}}, your PhysiOkhom care plan is ready ({{2}}). Please open the app to rev
 
 ---
 
-### 4. `visit_rescheduled`
+### 4. `appointment_reschedule_1`
+
+| Field | Value |
+|--------|--------|
+| **Category** | UTILITY |
+| **Language** | en_US |
+| **When** | Physio, care manager, or admin reschedules a patient visit |
+| **Message ID** | `29721` |
+| **Template ID** | `1354023350219435` |
+| **Env** | `FAST2SMS_MESSAGE_ID_RESCHEDULED=29721` |
+| **Status** | Approved |
+
+**Body**
+
+```text
+Hello {{1}},
+
+Your PhysiOkhom {{2}} has been rescheduled by {{3}}.
+
+New appointment: {{4}} at {{5}}
+
+Thanks,
+Team PhysiOkhom
+```
+
+**Variables**
+
+| Var | Meaning | Example |
+|-----|---------|---------|
+| `{{1}}` | Patient name | `Sanju` |
+| `{{2}}` | Visit type | `home visit` |
+| `{{3}}` | Who rescheduled | `Dr. Ankit Sharma` / `your care manager` |
+| `{{4}}` | New date | `24 Aug 2026` |
+| `{{5}}` | New time slot | `11:00-12:00` |
+
+**Optional button — View details**
+
+| Field | Value |
+|--------|--------|
+| URL type | Dynamic |
+| Website URL | `https://physiokhom.com/dashboard/bookings/{{1}}` |
+| Sample for `{{1}}` | `6a7ae87711be79f88f2cdb70` |
+
+**Sample preview (Meta review)**
+
+```text
+Hello Sanju,
+
+Your PhysiOkhom home visit has been rescheduled by Dr. Ankit Sharma.
+
+New appointment: 24 Aug 2026 at 11:00-12:00
+
+Thanks,
+Team PhysiOkhom
+```
+
+---
+
+### 4 (legacy). `visit_rescheduled`
 
 | Field | Value |
 |--------|--------|
 | **Category** | UTILITY |
 | **Language** | en |
 | **When** | A visit / session is rescheduled |
+| **Status** | Superseded by `patient_visit_rescheduled_1` (5 vars + optional button) |
 
 **Body**
 
@@ -417,7 +476,8 @@ Hi {{1}}, a PhysiOkhom account was created for you. Log in with mobile {{2}} and
 | `booking_received` | UTILITY | 4 | | `AUTHKEY_WID_BOOKING_RECEIVED` | Pending |
 | `physio_assigned` / `physiokhom_appointment_confirmation` | UTILITY | 5 | `26916` | `AUTHKEY_WID_APPOINTMENT_CONFIRMED` | Live |
 | `care_plan_ready` | UTILITY | 2 | | `AUTHKEY_WID_CARE_PLAN_READY` | Pending |
-| `visit_rescheduled` | UTILITY | 3 | | `AUTHKEY_WID_VISIT_RESCHEDULED` | Pending |
+| `appointment_reschedule_1` | UTILITY | 5 | `29721` | `FAST2SMS_MESSAGE_ID_RESCHEDULED` | Approved |
+| `visit_rescheduled` (legacy) | UTILITY | 3 | | `AUTHKEY_WID_VISIT_RESCHEDULED` | Superseded |
 | `physio_upcomming_appointment` | UTILITY | 5 | `26927` | `AUTHKEY_WID_PHYSIO_UPCOMING` | Pending Meta — cron wired |
 | `payment_received` / `payment_confirmation_1` | UTILITY | 3 | `26922` | `AUTHKEY_WID_PAYMENT_RECEIVED` | Live |
 | `clinic_assigned` / manager assign patient | UTILITY | 5 | `26916` | `FAST2SMS_MESSAGE_ID_APPOINTMENT` | **Reuse live** appointment |

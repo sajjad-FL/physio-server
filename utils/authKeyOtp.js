@@ -11,6 +11,7 @@ const DEFAULT_FEEDBACK_MESSAGE_ID = '26926';
 const DEFAULT_UPCOMING_MESSAGE_ID = '26927';
 const DEFAULT_ADMIN_BOOKING_MESSAGE_ID = '28373';
 const DEFAULT_MANAGER_ASSIGNED_MESSAGE_ID = '28532';
+const DEFAULT_RESCHEDULED_MESSAGE_ID = '29721';
 
 function adminBookingMessageId() {
   return String(
@@ -358,6 +359,58 @@ export async function notifyManagerAssignedPatientWhatsApp({
   }
 
   return false;
+}
+
+/**
+ * Patient WhatsApp when a visit is rescheduled (physio / manager / admin).
+ * Template: appointment_reschedule_1 (message_id 29721)
+ * Header: Your appointment was rescheduled
+ * Body: {{1}} patient · {{2}} visit type · {{3}} rescheduled by · {{4}} new date · {{5}} new time
+ */
+export async function notifyVisitRescheduledWhatsApp({
+  phone,
+  name,
+  visitType,
+  rescheduledBy,
+  date,
+  time,
+  booking,
+  bookingId,
+}) {
+  if (!isWhatsAppConfigured()) return false;
+  const mobile = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (mobile.length !== 10) return false;
+
+  const messageId = String(
+    process.env.FAST2SMS_MESSAGE_ID_RESCHEDULED ||
+      process.env.AUTHKEY_WID_VISIT_RESCHEDULED ||
+      DEFAULT_RESCHEDULED_MESSAGE_ID,
+  ).trim() || DEFAULT_RESCHEDULED_MESSAGE_ID;
+  void bookingId;
+
+  const patientName = String(name || booking?.userId?.name || booking?.name || 'there').trim() || 'there';
+  const typeLabel = String(visitType || visitTypeLabel(booking)).trim().slice(0, 60) || 'physiotherapy visit';
+  const byLabel = String(rescheduledBy || 'your physiotherapist').trim().slice(0, 60) || 'your physiotherapist';
+  const dateLabel = formatApptDate(date || booking?.date);
+  const timeLabel = formatApptTime(time || booking?.timeSlot);
+  const variables = [patientName, typeLabel, byLabel, dateLabel, timeLabel];
+
+  console.log(
+    `[WhatsApp][visit_rescheduled] sending message_id=${messageId} to=***${mobile.slice(-4)} vars=${JSON.stringify(variables)}`,
+  );
+
+  try {
+    await sendFast2SmsTemplate({
+      mobile,
+      messageId,
+      variables,
+    });
+    console.log(`[WhatsApp][visit_rescheduled] ok message_id=${messageId}`);
+    return true;
+  } catch (err) {
+    console.warn('[WhatsApp][visit_rescheduled]', err?.message || err);
+    return false;
+  }
 }
 
 export async function notifyFeedbackSurveyWhatsApp({
