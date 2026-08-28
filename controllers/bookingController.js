@@ -1,29 +1,38 @@
-import mongoose from 'mongoose';
-import Booking from '../models/Booking.js';
-import User from '../models/User.js';
-import Physiotherapist from '../models/Physiotherapist.js';
-import Review from '../models/Review.js';
-import Payment from '../models/Payment.js';
-import { DAILY_SLOTS, todayYMDLocal, isSlotStartInPastForToday, isSlotWithin2HoursForToday } from '../config/slots.js';
-import { sendSMS, sendWhatsApp } from '../utils/notifications.js';
-import { notifyPaymentReceivedWhatsApp, notifyAppointmentConfirmedWhatsApp, notifyVisitRescheduledWhatsApp } from '../utils/authKeyOtp.js';
+import mongoose from "mongoose";
+import Booking from "../models/Booking.js";
+import User from "../models/User.js";
+import Physiotherapist from "../models/Physiotherapist.js";
+import Review from "../models/Review.js";
+import Payment from "../models/Payment.js";
+import {
+  DAILY_SLOTS,
+  todayYMDLocal,
+  isSlotStartInPastForToday,
+  isSlotWithin2HoursForToday,
+} from "../config/slots.js";
+import { sendSMS, sendWhatsApp } from "../utils/notifications.js";
+import {
+  notifyPaymentReceivedWhatsApp,
+  notifyAppointmentConfirmedWhatsApp,
+  notifyVisitRescheduledWhatsApp,
+} from "../utils/authKeyOtp.js";
 import {
   bookingAmountRupees,
   computeMarketplaceSplit,
   applyOfflineVerificationWallet,
-} from '../utils/marketplacePayment.js';
-import { isPhysioBookable } from '../utils/physioVerification.js';
+} from "../utils/marketplacePayment.js";
+import { isPhysioBookable } from "../utils/physioVerification.js";
 import {
   getBookablePhysioCount,
   countActivePrimaryBookingsForSlot,
-} from '../utils/slotCapacity.js';
-import { deriveBookingPaymentSummary } from '../utils/installmentRollup.js';
+} from "../utils/slotCapacity.js";
+import { deriveBookingPaymentSummary } from "../utils/installmentRollup.js";
 import {
   fireBookingPush,
   notifyExpoUsers,
   findUserIdForPhysioProfile,
-} from '../utils/expoPush.js';
-import { processReferralRewardOnBookingCompleted } from '../services/referralReward.js';
+} from "../utils/expoPush.js";
+import { processReferralRewardOnBookingCompleted } from "../services/referralReward.js";
 import {
   computeDistanceSurcharge,
   getDefaultBookingAmountRupeesSync,
@@ -32,19 +41,22 @@ import {
   getTechniqueSplitSync,
   isTechniqueIssue,
   getManagerCommissionPerSessionSync,
-} from '../utils/pricingConfig.js';
-import { isPlanLive, isAwaitingPatientConsent } from '../utils/planStatus.js';
-import { normalizePincode } from '../utils/pincode.js';
-import { applyZoneAndManager } from '../utils/zoneAssign.js';
-import { findActiveManagerCare } from '../utils/activeManagerCare.js';
-import { applyHomePlanFields, validateHomePlanInput } from '../utils/homePlan.js';
-import { allocateBookingCode } from '../utils/bookingCode.js';
-import { readPagination, paginationMeta } from '../utils/pagination.js';
+} from "../utils/pricingConfig.js";
+import { isPlanLive, isAwaitingPatientConsent } from "../utils/planStatus.js";
+import { normalizePincode } from "../utils/pincode.js";
+import { applyZoneAndManager } from "../utils/zoneAssign.js";
+import { findActiveManagerCare } from "../utils/activeManagerCare.js";
+import {
+  applyHomePlanFields,
+  validateHomePlanInput,
+} from "../utils/homePlan.js";
+import { allocateBookingCode } from "../utils/bookingCode.js";
+import { readPagination, paginationMeta } from "../utils/pagination.js";
 import {
   fireAssignmentWhatsApp,
   fireAdminNewBookingWhatsApp,
   notifyOnManagerAssigned,
-} from '../utils/assignmentWhatsApp.js';
+} from "../utils/assignmentWhatsApp.js";
 
 async function attachPaymentsAndSummary(booking) {
   if (!booking?._id) return { payments: [], paymentSummary: null };
@@ -55,7 +67,9 @@ async function attachPaymentsAndSummary(booking) {
     ...p,
     sessionOrdinal:
       p.sessionId && Array.isArray(booking.schedule)
-        ? booking.schedule.findIndex((s) => String(s._id) === String(p.sessionId)) + 1 || null
+        ? booking.schedule.findIndex(
+            (s) => String(s._id) === String(p.sessionId),
+          ) + 1 || null
         : null,
   }));
   return {
@@ -64,12 +78,18 @@ async function attachPaymentsAndSummary(booking) {
   };
 }
 
-const ALLOWED_STATUSES = ['pending', 'assigned', 'accepted', 'scheduled', 'completed'];
+const ALLOWED_STATUSES = [
+  "pending",
+  "assigned",
+  "accepted",
+  "scheduled",
+  "completed",
+];
 const PHYSIO_SLOT_CONFLICT_MSG =
-  'This physiotherapist already has another booking in that time slot';
+  "This physiotherapist already has another booking in that time slot";
 const SLOT_AT_PLATFORM_CAPACITY_MSG =
-  'All available physiotherapists are already booked for this time slot';
-const ALLOWED_SERVICE_TYPES = ['online', 'home', 'clinic'];
+  "All available physiotherapists are already booked for this time slot";
+const ALLOWED_SERVICE_TYPES = ["online", "home", "clinic"];
 
 function defaultBookingAmountRupees() {
   return getDefaultBookingAmountRupeesSync();
@@ -77,12 +97,12 @@ function defaultBookingAmountRupees() {
 
 function isValidDateString(dateStr) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
-  const d = new Date(dateStr + 'T00:00:00.000Z');
+  const d = new Date(dateStr + "T00:00:00.000Z");
   return !Number.isNaN(d.getTime());
 }
 
 function normalizeTimeSlot(timeSlot) {
-  return String(timeSlot || '').trim();
+  return String(timeSlot || "").trim();
 }
 
 function parseCoords(body) {
@@ -96,7 +116,7 @@ function parseCoords(body) {
 }
 
 function parseLatLng(coords) {
-  if (!coords || typeof coords !== 'object') return null;
+  if (!coords || typeof coords !== "object") return null;
   const lat = Number(coords.lat);
   const lng = Number(coords.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -107,8 +127,8 @@ function parseSchedule(schedule) {
   if (!Array.isArray(schedule) || schedule.length === 0) return null;
   const normalized = [];
   for (const item of schedule) {
-    const date = String(item?.date || '').trim();
-    const time = String(item?.time || '').trim();
+    const date = String(item?.date || "").trim();
+    const time = String(item?.time || "").trim();
     if (!isValidDateString(date) || !time) return null;
     normalized.push({ date, time });
   }
@@ -142,56 +162,80 @@ export async function createBooking(req, res, next) {
   try {
     const userId = req.user?.id;
     if (!userId) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const { name, location, issue, date, timeSlot, consentAccepted, serviceType } = req.body || {};
+    const {
+      name,
+      location,
+      issue,
+      date,
+      timeSlot,
+      consentAccepted,
+      serviceType,
+    } = req.body || {};
 
     if (consentAccepted !== true) {
-      return res.status(400).json({ message: 'You must accept consent before booking' });
-    }
-
-    if (!name?.trim() || !location?.trim() || !issue?.trim() || !date || !timeSlot) {
       return res
         .status(400)
-        .json({ message: 'name, location, issue, date, and timeSlot are required' });
+        .json({ message: "You must accept consent before booking" });
+    }
+
+    if (
+      !name?.trim() ||
+      !location?.trim() ||
+      !issue?.trim() ||
+      !date ||
+      !timeSlot
+    ) {
+      return res.status(400).json({
+        message: "name, location, issue, date, and timeSlot are required",
+      });
     }
 
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
 
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     const normalizedServiceType = ALLOWED_SERVICE_TYPES.includes(serviceType)
       ? serviceType
-      : 'home';
+      : "home";
 
-    if (normalizedServiceType === 'online') {
+    if (normalizedServiceType === "online") {
       return res.status(400).json({
         message:
-          'Online consultations are paid first, then confirmed. Use Book an appointment (/book) or POST /bookings/online-checkout/start.',
+          "Online consultations are paid first, then confirmed. Use Book an appointment (/book) or POST /bookings/online-checkout/start.",
       });
     }
 
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmd = todayYMDLocal();
     if (date < todayYmd) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
     if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
 
     const platformCapacity = await getBookablePhysioCount();
     if (platformCapacity < 1) {
       return res.status(503).json({
-        message: 'No verified physiotherapists are available to take new bookings right now',
+        message:
+          "No verified physiotherapists are available to take new bookings right now",
       });
     }
-    const alreadyBooked = await countActivePrimaryBookingsForSlot(date, normalizedTimeSlot);
+    const alreadyBooked = await countActivePrimaryBookingsForSlot(
+      date,
+      normalizedTimeSlot,
+    );
     if (alreadyBooked >= platformCapacity) {
       return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
     }
@@ -207,10 +251,12 @@ export async function createBooking(req, res, next) {
       userUpdate.coordinates = coords;
     }
 
-    const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+    const user = await User.findByIdAndUpdate(userId, userUpdate, {
+      new: true,
+    });
 
     if (!user || !user.isVerified) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     const totalAmount = defaultBookingAmountRupees();
@@ -225,8 +271,8 @@ export async function createBooking(req, res, next) {
         issue: issue.trim(),
         date,
         timeSlot: normalizedTimeSlot,
-        status: selectedPhysio ? 'assigned' : 'pending',
-        paymentStatus: 'pending',
+        status: selectedPhysio ? "assigned" : "pending",
+        paymentStatus: "pending",
         serviceType: normalizedServiceType,
         sessions: 1,
         amountPaise: Math.round(totalAmount * 100),
@@ -235,8 +281,8 @@ export async function createBooking(req, res, next) {
         bookingSeq,
         bookingCode,
         payment: {
-          mode: 'online',
-          status: 'pending',
+          mode: "online",
+          status: "pending",
           amount: split.amount,
           commission: split.commission,
           physioEarning: split.physioEarning,
@@ -246,31 +292,31 @@ export async function createBooking(req, res, next) {
       if (e?.code === 11000) {
         return res.status(409).json({
           message:
-            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+            "Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index",
         });
       }
       throw e;
     }
 
     const populated = await Booking.findById(booking._id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone')
+      .populate("userId", "name phone location coordinates")
+      .populate("physioId", "name specialization location phone")
       .lean();
 
     await sendSMS({
       to: user.phone,
       message:
-        'Booking request received for ' +
+        "Booking request received for " +
         date +
-        ' at ' +
+        " at " +
         normalizedTimeSlot +
-        (selectedPhysio ? '.' : '. We are assigning a physiotherapist.'),
+        (selectedPhysio ? "." : ". We are assigning a physiotherapist."),
     });
     if (selectedPhysio) {
       await notifyAppointmentConfirmedWhatsApp({
         phone: user.phone,
         name: user.name || name,
-        bookedWith: selectedPhysio.name || 'PhysiOkhom',
+        bookedWith: selectedPhysio.name || "PhysiOkhom",
         date,
         time: normalizedTimeSlot,
         booking: populated,
@@ -279,7 +325,8 @@ export async function createBooking(req, res, next) {
     } else {
       await sendWhatsApp({
         to: user.phone,
-        message: 'Thanks — we received your booking. Our team will assign a physiotherapist shortly.',
+        message:
+          "Thanks — we received your booking. Our team will assign a physiotherapist shortly.",
       });
     }
     if (selectedPhysio?.phone) {
@@ -302,38 +349,56 @@ export async function createBooking(req, res, next) {
   }
 }
 
-const ADMIN_LIST_STATUSES = ['pending', 'assigned', 'accepted', 'scheduled', 'completed'];
-const ADMIN_PAYMENT_STATUSES = ['pending', 'held', 'released', 'refunded'];
+const ADMIN_LIST_STATUSES = [
+  "pending",
+  "assigned",
+  "accepted",
+  "scheduled",
+  "completed",
+];
+const ADMIN_PAYMENT_STATUSES = ["pending", "held", "released", "refunded"];
 
 function readAdminBookingsPagination(query) {
   return readPagination(query, { defaultLimit: 10, maxLimit: 50 });
 }
 
 function escapeRegex(value) {
-  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function buildAdminBookingListFilter(query) {
   const parts = [];
-  const { status, paymentStatus, assignment, serviceType, sessionStatus } = query || {};
+  const { status, paymentStatus, assignment, serviceType, sessionStatus } =
+    query || {};
 
-  if (typeof status === 'string' && ADMIN_LIST_STATUSES.includes(status)) {
+  if (typeof status === "string" && ADMIN_LIST_STATUSES.includes(status)) {
     parts.push({ status });
   }
-  if (typeof paymentStatus === 'string' && ADMIN_PAYMENT_STATUSES.includes(paymentStatus)) {
+  if (
+    typeof paymentStatus === "string" &&
+    ADMIN_PAYMENT_STATUSES.includes(paymentStatus)
+  ) {
     parts.push({ paymentStatus });
   }
-  if (assignment === 'unassigned') {
+  if (assignment === "unassigned") {
     parts.push({ $or: [{ physioId: null }, { physioId: { $exists: false } }] });
-  } else if (assignment === 'assigned') {
+  } else if (assignment === "assigned") {
     parts.push({ physioId: { $ne: null } });
   }
-  if (typeof serviceType === 'string' && ALLOWED_SERVICE_TYPES.includes(serviceType)) {
+  if (
+    typeof serviceType === "string" &&
+    ALLOWED_SERVICE_TYPES.includes(serviceType)
+  ) {
     parts.push({ serviceType });
   }
-  if (sessionStatus === 'none' || sessionStatus === 'empty') {
-    parts.push({ $or: [{ sessionStatus: null }, { sessionStatus: { $exists: false } }] });
-  } else if (typeof sessionStatus === 'string' && ['scheduled', 'completed'].includes(sessionStatus)) {
+  if (sessionStatus === "none" || sessionStatus === "empty") {
+    parts.push({
+      $or: [{ sessionStatus: null }, { sessionStatus: { $exists: false } }],
+    });
+  } else if (
+    typeof sessionStatus === "string" &&
+    ["scheduled", "completed"].includes(sessionStatus)
+  ) {
     parts.push({ sessionStatus });
   }
 
@@ -343,11 +408,16 @@ function buildAdminBookingListFilter(query) {
 }
 
 async function buildAdminBookingSearchFilter(searchRaw) {
-  const search = String(searchRaw || '').trim();
+  const search = String(searchRaw || "").trim();
   if (!search) return null;
 
-  const rx = new RegExp(escapeRegex(search), 'i');
-  const or = [{ issue: rx }, { date: rx }, { timeSlot: rx }, { bookingCode: rx }];
+  const rx = new RegExp(escapeRegex(search), "i");
+  const or = [
+    { issue: rx },
+    { date: rx },
+    { timeSlot: rx },
+    { bookingCode: rx },
+  ];
   if (mongoose.isValidObjectId(search)) {
     or.push({ _id: new mongoose.Types.ObjectId(search) });
   }
@@ -360,14 +430,22 @@ async function buildAdminBookingSearchFilter(searchRaw) {
   }
 
   const [userIds, physioIds] = await Promise.all([
-    User.find({ $or: [{ name: rx }, { phone: rx }, { email: rx }, { location: rx }] })
-      .select('_id')
+    User.find({
+      $or: [{ name: rx }, { phone: rx }, { email: rx }, { location: rx }],
+    })
+      .select("_id")
       .limit(200)
       .lean(),
     Physiotherapist.find({
-      $or: [{ name: rx }, { phone: rx }, { email: rx }, { specialization: rx }, { location: rx }],
+      $or: [
+        { name: rx },
+        { phone: rx },
+        { email: rx },
+        { specialization: rx },
+        { location: rx },
+      ],
     })
-      .select('_id')
+      .select("_id")
       .limit(200)
       .lean(),
   ]);
@@ -394,8 +472,8 @@ export async function listBookings(req, res, next) {
 
     const [list, total] = await Promise.all([
       Booking.find(mongoFilter)
-        .populate('userId', 'name phone location coordinates')
-        .populate('physioId', 'name specialization location phone')
+        .populate("userId", "name phone location coordinates")
+        .populate("physioId", "name specialization location phone")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -416,36 +494,39 @@ export async function listMyBookings(req, res, next) {
   try {
     const userId = req.user?.id;
     if (!userId) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     const { page, limit, skip } = readPagination(req.query);
     const filter = { userId };
     const today = todayYMDLocal();
-    const dateMode = String(req.query?.date || 'all');
-    let from = '';
-    let to = '';
-    if (dateMode === 'today') from = to = today;
-    if (dateMode === 'upcoming') from = today;
-    if (dateMode === 'past') to = today;
-    if (dateMode === 'range') {
-      from = String(req.query?.dateFrom || '');
-      to = String(req.query?.dateTo || '');
+    const dateMode = String(req.query?.date || "all");
+    let from = "";
+    let to = "";
+    if (dateMode === "today") from = to = today;
+    if (dateMode === "upcoming") from = today;
+    if (dateMode === "past") to = today;
+    if (dateMode === "range") {
+      from = String(req.query?.dateFrom || "");
+      to = String(req.query?.dateTo || "");
     }
     if (from || to) {
       const range = {};
       if (from) range.$gte = from;
-      if (to) range[dateMode === 'past' ? '$lt' : '$lte'] = to;
-      filter.$or = [{ date: range }, { schedule: { $elemMatch: { date: range } } }];
+      if (to) range[dateMode === "past" ? "$lt" : "$lte"] = to;
+      filter.$or = [
+        { date: range },
+        { schedule: { $elemMatch: { date: range } } },
+      ];
     }
 
-    const search = String(req.query?.search || '').trim();
+    const search = String(req.query?.search || "").trim();
     if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const rx = new RegExp(escaped, 'i');
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const rx = new RegExp(escaped, "i");
       const physioIds = await Physiotherapist.find({
         $or: [{ name: rx }, { specialization: rx }, { phone: rx }],
-      }).distinct('_id');
+      }).distinct("_id");
       const searchFilter = {
         $or: [
           { issue: rx },
@@ -458,13 +539,16 @@ export async function listMyBookings(req, res, next) {
 
     const [list, total] = await Promise.all([
       Booking.find(filter)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
+        .populate("userId", "name phone location coordinates pincode")
+        .populate("managerId", "name phone")
+        .populate(
+          "physioId",
+          "name specialization location phone experience pricePerSession pricePerSessionMax",
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Booking.countDocuments(filter),
     ]);
 
@@ -481,18 +565,22 @@ export async function getAdminBookingById(req, res, next) {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('clinicId', 'name address phone pincode coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("managerId", "name phone")
+      .populate("clinicId", "name address phone pincode coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
 
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    const { payments, paymentSummary } = await attachPaymentsAndSummary(booking);
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const { payments, paymentSummary } =
+      await attachPaymentsAndSummary(booking);
     return res.json({ ...booking, payments, paymentSummary });
   } catch (err) {
     next(err);
@@ -505,36 +593,37 @@ export async function getBookingById(req, res, next) {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('clinicId', 'name address phone pincode coordinates')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("managerId", "name phone")
+      .populate("clinicId", "name address phone pincode coordinates")
       .populate(
-        'physioId',
-        'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews'
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews",
       )
       .lean();
 
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     const role = req.auth?.role;
     const isOwner = userId && booking.userId?._id?.toString() === userId;
     const managerRef = booking.managerId?._id || booking.managerId;
     const isManager =
-      role === 'care_manager' && managerRef && managerRef.toString() === userId;
-    const isAdmin = role === 'admin';
+      role === "care_manager" && managerRef && managerRef.toString() === userId;
+    const isAdmin = role === "admin";
     if (userId && !isOwner && !isManager && !isAdmin) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
 
-    const sessionDone = booking.sessionStatus === 'completed' && booking.status === 'completed';
+    const sessionDone =
+      booking.sessionStatus === "completed" && booking.status === "completed";
     let reviewForBooking = null;
     let sessionReviews = [];
     if (userId && booking.physioId) {
       const rows = await Review.find({ bookingId: id, userId })
-        .select('sessionId rating comment createdAt')
+        .select("sessionId rating comment createdAt")
         .lean();
       reviewForBooking = rows.find((r) => r.sessionId == null) || null;
       sessionReviews = rows
@@ -542,17 +631,20 @@ export async function getBookingById(req, res, next) {
         .map((r) => ({
           sessionId: String(r.sessionId),
           rating: r.rating,
-          comment: r.comment || '',
+          comment: r.comment || "",
           createdAt: r.createdAt,
         }));
     }
 
-    const { payments, paymentSummary } = await attachPaymentsAndSummary(booking);
+    const { payments, paymentSummary } =
+      await attachPaymentsAndSummary(booking);
 
     return res.json({
       ...booking,
       review: {
-        canSubmit: Boolean(userId && sessionDone && booking.physioId && !reviewForBooking),
+        canSubmit: Boolean(
+          userId && sessionDone && booking.physioId && !reviewForBooking,
+        ),
         submitted: reviewForBooking,
       },
       sessionReviews,
@@ -568,41 +660,48 @@ export async function updateBooking(req, res, next) {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const prev = await Booking.findById(id).lean();
     if (!prev) {
-      return res.status(404).json({ message: 'Booking not found' });
+      return res.status(404).json({ message: "Booking not found" });
     }
 
-    const { status, physioId, amountPerSession: amountPerSessionRaw } = req.body || {};
+    const {
+      status,
+      physioId,
+      amountPerSession: amountPerSessionRaw,
+    } = req.body || {};
     const updates = {};
     let selectedPhysio = null;
 
     if (status !== undefined) {
       if (!ALLOWED_STATUSES.includes(status)) {
         return res.status(400).json({
-          message: `status must be one of: ${ALLOWED_STATUSES.join(', ')}`,
+          message: `status must be one of: ${ALLOWED_STATUSES.join(", ")}`,
         });
       }
       updates.status = status;
     }
 
     if (physioId !== undefined) {
-      if (physioId === null || physioId === '') {
+      if (physioId === null || physioId === "") {
         updates.physioId = null;
       } else {
         if (!mongoose.isValidObjectId(physioId)) {
-          return res.status(400).json({ message: 'Invalid physiotherapist id' });
+          return res
+            .status(400)
+            .json({ message: "Invalid physiotherapist id" });
         }
         const physio = await Physiotherapist.findById(physioId).lean();
         if (!physio) {
-          return res.status(400).json({ message: 'Physiotherapist not found' });
+          return res.status(400).json({ message: "Physiotherapist not found" });
         }
         if (!isPhysioBookable(physio)) {
           return res.status(400).json({
-            message: 'That physiotherapist is not approved or not available for new bookings.',
+            message:
+              "That physiotherapist is not approved or not available for new bookings.",
           });
         }
         updates.physioId = physioId;
@@ -629,20 +728,26 @@ export async function updateBooking(req, res, next) {
      * Multi-session home plans are priced separately via createHomePlan and their
      * discount is preserved here if already present.
      */
-    const physioChanged = updates.physioId !== undefined && String(updates.physioId || '') !== String(prev.physioId || '');
-    const shouldReprice = amountPerSessionRaw !== undefined && amountPerSessionRaw !== null && amountPerSessionRaw !== '';
+    const physioChanged =
+      updates.physioId !== undefined &&
+      String(updates.physioId || "") !== String(prev.physioId || "");
+    const shouldReprice =
+      amountPerSessionRaw !== undefined &&
+      amountPerSessionRaw !== null &&
+      amountPerSessionRaw !== "";
     if (shouldReprice || physioChanged) {
-      const amountPerSession =
-        shouldReprice
-          ? Number(amountPerSessionRaw)
-          : Number(prev.amountPerSession);
+      const amountPerSession = shouldReprice
+        ? Number(amountPerSessionRaw)
+        : Number(prev.amountPerSession);
       if (!Number.isFinite(amountPerSession) || amountPerSession <= 0) {
-        return res.status(400).json({ message: 'amountPerSession must be a positive number' });
+        return res
+          .status(400)
+          .json({ message: "amountPerSession must be a positive number" });
       }
-      if (prev.paymentStatus === 'held' || prev.paymentStatus === 'refunded') {
+      if (prev.paymentStatus === "held" || prev.paymentStatus === "refunded") {
         return res.status(409).json({
           message:
-            'Cannot change the session price after payment is held or refunded. Refund and rebook if needed.',
+            "Cannot change the session price after payment is held or refunded. Refund and rebook if needed.",
         });
       }
 
@@ -650,22 +755,43 @@ export async function updateBooking(req, res, next) {
         updates.physioId !== undefined ? updates.physioId : prev.physioId;
       let effectivePhysio = selectedPhysio;
       if (!effectivePhysio && effectivePhysioId) {
-        effectivePhysio = await Physiotherapist.findById(effectivePhysioId).select('coordinates').lean();
+        effectivePhysio = await Physiotherapist.findById(effectivePhysioId)
+          .select("coordinates")
+          .lean();
       }
-      const patient = await User.findById(prev.userId).select('coordinates').lean();
-      const surchargeMeta = computeDistanceSurcharge(patient?.coordinates, effectivePhysio?.coordinates);
+      const patient = await User.findById(prev.userId)
+        .select("coordinates")
+        .lean();
+      const surchargeMeta = computeDistanceSurcharge(
+        patient?.coordinates,
+        effectivePhysio?.coordinates,
+      );
 
       const sessionsCount = Math.max(1, Number(prev.sessions) || 1);
-      const discountPercent = Number(prev.discountPercent) > 0 ? Number(prev.discountPercent) : 0;
+      const discountPercent =
+        Number(prev.discountPercent) > 0 ? Number(prev.discountPercent) : 0;
       const subtotal = amountPerSession * sessionsCount;
-      const discounted = Math.round((subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100) / 100;
-      const totalAmount = Math.round((discounted + surchargeMeta.distanceSurchargeAmount + Number.EPSILON) * 100) / 100;
+      const discounted =
+        Math.round(
+          (subtotal * (1 - discountPercent / 100) + Number.EPSILON) * 100,
+        ) / 100;
+      const totalAmount =
+        Math.round(
+          (discounted +
+            surchargeMeta.distanceSurchargeAmount +
+            Number.EPSILON) *
+            100,
+        ) / 100;
       const techniqueDirect =
-        prev.carePath === 'technique_direct' && isTechniqueIssue(prev.issue);
+        prev.carePath === "technique_direct" && isTechniqueIssue(prev.issue);
       const configuredTechniqueSplit = techniqueDirect
-        ? getTechniqueSplitSync(prev.issue, sessionsCount, { includeManager: false })
+        ? getTechniqueSplitSync(prev.issue, sessionsCount, {
+            includeManager: false,
+          })
         : null;
-      const split = configuredTechniqueSplit || computeMarketplaceSplit(totalAmount, sessionsCount);
+      const split =
+        configuredTechniqueSplit ||
+        computeMarketplaceSplit(totalAmount, sessionsCount);
       const platformCommission = techniqueDirect
         ? Math.min(totalAmount, split.commission)
         : split.commission;
@@ -677,9 +803,9 @@ export async function updateBooking(req, res, next) {
       updates.distanceSurchargeAmount = surchargeMeta.distanceSurchargeAmount;
       updates.totalAmount = totalAmount;
       updates.amountPaise = Math.round(totalAmount * 100);
-      updates['payment.amount'] = techniqueDirect ? totalAmount : split.amount;
-      updates['payment.commission'] = platformCommission;
-      updates['payment.physioEarning'] = techniqueDirect
+      updates["payment.amount"] = techniqueDirect ? totalAmount : split.amount;
+      updates["payment.commission"] = platformCommission;
+      updates["payment.physioEarning"] = techniqueDirect
         ? Math.max(0, totalAmount - platformCommission)
         : split.physioEarning;
       if (techniqueDirect) {
@@ -691,28 +817,29 @@ export async function updateBooking(req, res, next) {
       }
     }
 
-    if (updates.physioId && prev.carePath === 'technique_direct') {
-      updates.planStatus = 'live';
-      updates.homePlanPaymentMode = 'online';
-      updates.homePlanBillingType = 'full';
+    if (updates.physioId && prev.carePath === "technique_direct") {
+      updates.planStatus = "live";
+      updates.homePlanPaymentMode = "online";
+      updates.homePlanBillingType = "full";
     }
 
     if (Object.keys(updates).length === 0) {
-      return res
-        .status(400)
-        .json({ message: 'No valid fields to update (status, physioId, or amountPerSession)' });
+      return res.status(400).json({
+        message:
+          "No valid fields to update (status, physioId, or amountPerSession)",
+      });
     }
 
     const booking = await Booking.findByIdAndUpdate(id, updates, {
       new: true,
       runValidators: true,
     })
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone')
+      .populate("userId", "name phone location coordinates")
+      .populate("physioId", "name specialization location phone")
       .lean();
 
     if (!booking) {
-      return res.status(404).json({ message: 'Booking not found' });
+      return res.status(404).json({ message: "Booking not found" });
     }
 
     const nextPid =
@@ -720,28 +847,30 @@ export async function updateBooking(req, res, next) {
         ? booking.physioId._id.toString()
         : booking.physioId
           ? booking.physioId.toString()
-          : '';
-    const prevPid = prev.physioId ? prev.physioId.toString() : '';
+          : "";
+    const prevPid = prev.physioId ? prev.physioId.toString() : "";
     const physioNewlyAssigned = nextPid && nextPid !== prevPid;
 
     if (physioNewlyAssigned && nextPid) {
-      if (booking.status === 'assigned' || booking.status === 'pending') {
+      if (booking.status === "assigned" || booking.status === "pending") {
         const nextWorkflow =
-          prev.carePath === 'technique_direct' ||
-          prev.carePath === 'technique_managed' ||
+          prev.carePath === "technique_direct" ||
+          prev.carePath === "technique_managed" ||
           !prev.managerId
-            ? 'physio_assigned'
-            : booking.workflowStatus || 'physio_assigned';
+            ? "physio_assigned"
+            : booking.workflowStatus || "physio_assigned";
         await Booking.findByIdAndUpdate(id, {
-          status: 'accepted',
-          sessionStatus: 'scheduled',
+          status: "accepted",
+          sessionStatus: "scheduled",
           workflowStatus: nextWorkflow,
         });
-        booking.status = 'accepted';
-        booking.sessionStatus = 'scheduled';
+        booking.status = "accepted";
+        booking.sessionStatus = "scheduled";
         booking.workflowStatus = nextWorkflow;
       }
-      const physioDoc = await Physiotherapist.findById(nextPid).select('phone name').lean();
+      const physioDoc = await Physiotherapist.findById(nextPid)
+        .select("phone name")
+        .lean();
       const phone = physioDoc?.phone;
       if (phone) {
         const when = `${booking.date} ${booking.timeSlot}`;
@@ -758,21 +887,21 @@ export async function updateBooking(req, res, next) {
         const physioLoginId = await findUserIdForPhysioProfile(nextPid);
         if (!physioLoginId) return;
         await notifyExpoUsers([physioLoginId], {
-          title: 'New booking assigned',
+          title: "New booking assigned",
           body: `Tap to open — ${booking.date} · ${booking.timeSlot}.`,
           data: {
-            kind: 'booking_assigned',
+            kind: "booking_assigned",
             bookingId: String(booking._id),
           },
         });
       });
     }
 
-    if (updates.status === 'completed' && prev.status !== 'completed') {
+    if (updates.status === "completed" && prev.status !== "completed") {
       const bookingDoc = await Booking.findById(id);
       if (bookingDoc) {
         processReferralRewardOnBookingCompleted(bookingDoc).catch((e) =>
-          console.warn('[referral] updateBooking:', e?.message || e),
+          console.warn("[referral] updateBooking:", e?.message || e),
         );
       }
     }
@@ -789,55 +918,83 @@ export async function updateBooking(req, res, next) {
 export async function requestHomeBooking(req, res, next) {
   try {
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    const { name, location, issue, date, timeSlot, consentAccepted } = req.body || {};
+    const { name, location, issue, date, timeSlot, consentAccepted } =
+      req.body || {};
     if (consentAccepted !== true) {
-      return res.status(400).json({ message: 'You must accept consent before booking' });
-    }
-    if (!name?.trim() || !location?.trim() || !issue?.trim() || !date || !timeSlot) {
       return res
         .status(400)
-        .json({ message: 'name, location, issue, date, and timeSlot are required' });
+        .json({ message: "You must accept consent before booking" });
+    }
+    if (
+      !name?.trim() ||
+      !location?.trim() ||
+      !issue?.trim() ||
+      !date ||
+      !timeSlot
+    ) {
+      return res.status(400).json({
+        message: "name, location, issue, date, and timeSlot are required",
+      });
     }
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmdHome = todayYMDLocal();
     if (date < todayYmdHome) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
-    if (date === todayYmdHome && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+    if (
+      date === todayYmdHome &&
+      isSlotStartInPastForToday(normalizedTimeSlot)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
-    if (date === todayYmdHome && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+    if (
+      date === todayYmdHome &&
+      isSlotWithin2HoursForToday(normalizedTimeSlot)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Bookings must be made at least 2 hours in advance" });
     }
 
     const platformCapacityHome = await getBookablePhysioCount();
     if (platformCapacityHome < 1) {
       return res.status(503).json({
-        message: 'No verified physiotherapists are available to take new bookings right now',
+        message:
+          "No verified physiotherapists are available to take new bookings right now",
       });
     }
-    const alreadyBookedHome = await countActivePrimaryBookingsForSlot(date, normalizedTimeSlot);
+    const alreadyBookedHome = await countActivePrimaryBookingsForSlot(
+      date,
+      normalizedTimeSlot,
+    );
     if (alreadyBookedHome >= platformCapacityHome) {
       return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
     }
 
     const coords = parseCoords(req.body);
-    const pincode = normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
+    const pincode =
+      normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
     const userUpdate = { name: name.trim(), location: location.trim() };
     if (coords) userUpdate.coordinates = coords;
     if (pincode) userUpdate.pincode = pincode;
-    const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+    const user = await User.findByIdAndUpdate(userId, userUpdate, {
+      new: true,
+    });
     if (!user || !user.isVerified) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     let booking;
@@ -849,37 +1006,45 @@ export async function requestHomeBooking(req, res, next) {
         issue: issue.trim(),
         date,
         timeSlot: normalizedTimeSlot,
-        status: 'pending',
-        paymentStatus: 'pending',
-        serviceType: 'home',
-        planStatus: 'requested',
-        workflowStatus: 'pending_manager_assignment',
+        status: "pending",
+        paymentStatus: "pending",
+        serviceType: "home",
+        planStatus: "requested",
+        workflowStatus: "pending_manager_assignment",
         pincode: pincode || null,
         consentAccepted: true,
         bookingSeq,
         bookingCode,
       });
-      await applyZoneAndManager(booking, { pincode, location: location.trim() });
+      await applyZoneAndManager(booking, {
+        pincode,
+        location: location.trim(),
+      });
       await booking.save();
     } catch (e) {
       if (e?.code === 11000) {
         return res.status(409).json({
           message:
-            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+            "Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index",
         });
       }
       throw e;
     }
 
     const out = await Booking.findById(booking._id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('zoneId', 'name')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("managerId", "name phone")
+      .populate("zoneId", "name")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
 
     if (out?.managerId) {
-      fireAssignmentWhatsApp('manager-assigned-auto', () => notifyOnManagerAssigned(out));
+      fireAssignmentWhatsApp("manager-assigned-auto", () =>
+        notifyOnManagerAssigned(out),
+      );
     }
 
     fireAdminNewBookingWhatsApp(out);
@@ -897,44 +1062,62 @@ export async function requestHomeBooking(req, res, next) {
 export async function requestClinicBooking(req, res, next) {
   try {
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    const { name, location, issue, date, timeSlot, consentAccepted } = req.body || {};
+    const { name, location, issue, date, timeSlot, consentAccepted } =
+      req.body || {};
     if (consentAccepted !== true) {
-      return res.status(400).json({ message: 'You must accept consent before booking' });
-    }
-    if (!name?.trim() || !location?.trim() || !issue?.trim() || !date || !timeSlot) {
       return res
         .status(400)
-        .json({ message: 'name, location, issue, date, and timeSlot are required' });
+        .json({ message: "You must accept consent before booking" });
+    }
+    if (
+      !name?.trim() ||
+      !location?.trim() ||
+      !issue?.trim() ||
+      !date ||
+      !timeSlot
+    ) {
+      return res.status(400).json({
+        message: "name, location, issue, date, and timeSlot are required",
+      });
     }
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmd = todayYMDLocal();
     if (date < todayYmd) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
     if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
     if (date === todayYmd && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+      return res
+        .status(400)
+        .json({ message: "Bookings must be made at least 2 hours in advance" });
     }
 
     const coords = parseCoords(req.body);
-    const pincode = normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
+    const pincode =
+      normalizePincode(req.body?.pincode) || normalizePincode(location.trim());
     const userUpdate = { name: name.trim(), location: location.trim() };
     if (coords) userUpdate.coordinates = coords;
     if (pincode) userUpdate.pincode = pincode;
-    const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+    const user = await User.findByIdAndUpdate(userId, userUpdate, {
+      new: true,
+    });
     if (!user || !user.isVerified) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     let booking;
@@ -947,13 +1130,13 @@ export async function requestClinicBooking(req, res, next) {
         issue: issue.trim(),
         date,
         timeSlot: normalizedTimeSlot,
-        status: 'pending',
-        paymentStatus: 'pending',
-        serviceType: 'clinic',
-        carePath: 'clinic_visit',
-        clinicSource: 'direct',
-        planStatus: 'requested',
-        workflowStatus: 'pending_clinic_assignment',
+        status: "pending",
+        paymentStatus: "pending",
+        serviceType: "clinic",
+        carePath: "clinic_visit",
+        clinicSource: "direct",
+        planStatus: "requested",
+        workflowStatus: "pending_clinic_assignment",
         pincode: pincode || null,
         consentAccepted: true,
         bookingSeq,
@@ -964,15 +1147,15 @@ export async function requestClinicBooking(req, res, next) {
       if (e?.code === 11000) {
         return res.status(409).json({
           message:
-            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+            "Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index",
         });
       }
       throw e;
     }
 
     const out = await Booking.findById(booking._id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('clinicId', 'name address phone')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("clinicId", "name address phone")
       .lean();
     fireAdminNewBookingWhatsApp(out);
     return res.status(201).json(out);
@@ -989,73 +1172,93 @@ export async function requestClinicBooking(req, res, next) {
 export async function requestTechniqueBooking(req, res, next) {
   try {
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
     const body = req.body || {};
     const { issue, date, timeSlot, consentAccepted } = body;
     if (consentAccepted !== true) {
-      return res.status(400).json({ message: 'You must accept consent before booking' });
+      return res
+        .status(400)
+        .json({ message: "You must accept consent before booking" });
     }
 
-    const serviceTypeRaw = String(body.serviceType || 'home').trim().toLowerCase();
-    const serviceType = serviceTypeRaw === 'clinic' ? 'clinic' : 'home';
-    const visitLabel = serviceType === 'clinic' ? 'clinic visit' : 'home visit';
+    const serviceTypeRaw = String(body.serviceType || "home")
+      .trim()
+      .toLowerCase();
+    const serviceType = serviceTypeRaw === "clinic" ? "clinic" : "home";
+    const visitLabel = serviceType === "clinic" ? "clinic visit" : "home visit";
 
     const existingUser = await User.findById(userId)
-      .select('name location coordinates address isVerified')
+      .select("name location coordinates address isVerified")
       .lean();
     if (!existingUser || !existingUser.isVerified) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const name = String(body.name || existingUser.name || '').trim();
+    const name = String(body.name || existingUser.name || "").trim();
     const location = String(
-      body.location || existingUser.address?.text || existingUser.location || '',
+      body.location ||
+        existingUser.address?.text ||
+        existingUser.location ||
+        "",
     ).trim();
 
     if (!name || !issue?.trim() || !date || !timeSlot) {
       return res.status(400).json({
         message: !name
-          ? 'Complete your profile name before booking'
-          : 'name, issue, date, and timeSlot are required',
+          ? "Complete your profile name before booking"
+          : "name, issue, date, and timeSlot are required",
       });
     }
-    if (serviceType === 'home' && !location) {
-      return res.status(400).json({ message: 'Add a home address before booking' });
+    if (serviceType === "home" && !location) {
+      return res
+        .status(400)
+        .json({ message: "Add a home address before booking" });
     }
 
     const techniqueIssue = String(issue).trim();
     if (!isTechniqueIssue(techniqueIssue)) {
       return res.status(400).json({
-        message: 'This endpoint is only for Cupping Therapy, Dry Needling, Kinesio Taping, or IASTM',
+        message:
+          "This endpoint is only for Cupping Therapy, Dry Needling, Kinesio Taping, or IASTM",
       });
     }
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmd = todayYMDLocal();
     if (date < todayYmd) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
     if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
     if (date === todayYmd && isSlotWithin2HoursForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'Bookings must be made at least 2 hours in advance' });
+      return res
+        .status(400)
+        .json({ message: "Bookings must be made at least 2 hours in advance" });
     }
 
     const platformCapacity = await getBookablePhysioCount();
     if (platformCapacity < 1) {
       return res.status(503).json({
-        message: 'No verified physiotherapists are available to take new bookings right now',
+        message:
+          "No verified physiotherapists are available to take new bookings right now",
       });
     }
-    const alreadyBooked = await countActivePrimaryBookingsForSlot(date, normalizedTimeSlot);
+    const alreadyBooked = await countActivePrimaryBookingsForSlot(
+      date,
+      normalizedTimeSlot,
+    );
     if (alreadyBooked >= platformCapacity) {
       return res.status(409).json({ message: SLOT_AT_PLATFORM_CAPACITY_MSG });
     }
@@ -1068,21 +1271,26 @@ export async function requestTechniqueBooking(req, res, next) {
         coords = { lat, lng };
       }
     }
-    const pincode = normalizePincode(body?.pincode) || normalizePincode(location);
+    const pincode =
+      normalizePincode(body?.pincode) || normalizePincode(location);
     const userUpdate = { name };
-    if (serviceType === 'home' && location) {
+    if (serviceType === "home" && location) {
       userUpdate.location = location;
       if (coords) userUpdate.coordinates = coords;
       if (pincode) userUpdate.pincode = pincode;
     }
-    const user = await User.findByIdAndUpdate(userId, userUpdate, { new: true });
+    const user = await User.findByIdAndUpdate(userId, userUpdate, {
+      new: true,
+    });
     if (!user || !user.isVerified) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     const activeCare = await findActiveManagerCare(userId);
     const managed = Boolean(activeCare?.managerId);
-    const split = getTechniqueSplitSync(techniqueIssue, 1, { includeManager: managed });
+    const split = getTechniqueSplitSync(techniqueIssue, 1, {
+      includeManager: managed,
+    });
     const price = split.amountPerSession;
 
     let booking;
@@ -1094,8 +1302,8 @@ export async function requestTechniqueBooking(req, res, next) {
         issue: techniqueIssue,
         date,
         timeSlot: normalizedTimeSlot,
-        status: 'pending',
-        paymentStatus: 'pending',
+        status: "pending",
+        paymentStatus: "pending",
         serviceType,
         consentAccepted: true,
         sessions: 1,
@@ -1106,7 +1314,7 @@ export async function requestTechniqueBooking(req, res, next) {
         bookingCode,
         payment: {
           mode: null,
-          status: 'pending',
+          status: "pending",
           amount: split.amount,
           commission: split.commission,
           physioEarning: split.physioEarning,
@@ -1116,24 +1324,24 @@ export async function requestTechniqueBooking(req, res, next) {
       if (managed) {
         booking = new Booking({
           ...base,
-          carePath: 'technique_managed',
+          carePath: "technique_managed",
           managerId: activeCare.managerId,
           zoneId: activeCare.zoneId || null,
           pincode: pincode || activeCare.pincode || null,
           managerAssignedAt: new Date(),
-          planStatus: 'live',
+          planStatus: "live",
           planLiveAt: new Date(),
-          workflowStatus: 'plan_live',
+          workflowStatus: "plan_live",
           managerCommissionPerSession: split.managerPerSession,
-          homePlanPaymentMode: 'offline',
-          homePlanBillingType: 'full',
+          homePlanPaymentMode: "offline",
+          homePlanBillingType: "full",
         });
       } else {
         booking = new Booking({
           ...base,
-          carePath: 'technique_direct',
-          planStatus: 'requested',
-          workflowStatus: 'pending_physio_assignment',
+          carePath: "technique_direct",
+          planStatus: "requested",
+          workflowStatus: "pending_physio_assignment",
           pincode: pincode || null,
         });
       }
@@ -1142,7 +1350,7 @@ export async function requestTechniqueBooking(req, res, next) {
       if (e?.code === 11000) {
         return res.status(409).json({
           message:
-            'Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index',
+            "Could not save this booking (database conflict). Restart the API so booking indexes update, or run from server/: npm run migrate:booking-slot-index",
         });
       }
       throw e;
@@ -1151,9 +1359,9 @@ export async function requestTechniqueBooking(req, res, next) {
     if (managed && booking.managerId) {
       try {
         await notifyExpoUsers([booking.managerId], {
-          title: 'New technique booking',
+          title: "New technique booking",
           body: `${techniqueIssue} — assign a physiotherapist for this ${visitLabel}.`,
-          data: { kind: 'technique_managed', bookingId: String(booking._id) },
+          data: { kind: "technique_managed", bookingId: String(booking._id) },
         });
       } catch {
         /* ignore push failures */
@@ -1161,10 +1369,13 @@ export async function requestTechniqueBooking(req, res, next) {
     }
 
     const out = await Booking.findById(booking._id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('zoneId', 'name')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("managerId", "name phone")
+      .populate("zoneId", "name")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     fireAdminNewBookingWhatsApp(out);
     return res.status(201).json(out);
@@ -1181,24 +1392,29 @@ export async function createHomePlan(req, res, next) {
   try {
     const { id } = req.params;
     const physioId = req.physio?.id;
-    if (!physioId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!physioId) return res.status(401).json({ message: "Unauthorized" });
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.physioId?.toString() !== physioId) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
-    if (booking.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Plan can be created only for home service' });
+    if (booking.serviceType !== "home") {
+      return res
+        .status(400)
+        .json({ message: "Plan can be created only for home service" });
     }
 
-    const physioRate = await Physiotherapist.findById(booking.physioId).select('pricePerSession').lean();
+    const physioRate = await Physiotherapist.findById(booking.physioId)
+      .select("pricePerSession")
+      .lean();
     const validated = validateHomePlanInput(req.body, {
       requirePhysioRate:
-        Number.isFinite(Number(physioRate?.pricePerSession)) && Number(physioRate?.pricePerSession) > 0
+        Number.isFinite(Number(physioRate?.pricePerSession)) &&
+        Number(physioRate?.pricePerSession) > 0
           ? Number(physioRate.pricePerSession)
           : null,
     });
@@ -1210,34 +1426,37 @@ export async function createHomePlan(req, res, next) {
       applyHomePlanFields(booking, {
         ...validated,
         createdBy: req.user?.id,
-        createdByRole: 'physio',
-        planStatus: 'awaiting_consent',
-        workflowStatus: 'awaiting_patient_consent',
+        createdByRole: "physio",
+        planStatus: "awaiting_consent",
+        workflowStatus: "awaiting_patient_consent",
       });
     } catch (e) {
       return res.status(e.statusCode || 400).json({ message: e.message });
     }
 
-    if (booking.status === 'assigned') {
-      booking.status = 'assigned';
-      booking.sessionStatus = 'scheduled';
+    if (booking.status === "assigned") {
+      booking.status = "assigned";
+      booking.sessionStatus = "scheduled";
     }
     await booking.save();
 
     fireBookingPush(async () => {
       await notifyExpoUsers([booking.userId], {
-        title: 'Your care plan is ready',
-        body: 'Review and consent to your home care plan in the app.',
+        title: "Your care plan is ready",
+        body: "Review and consent to your home care plan in the app.",
         data: {
-          kind: 'plan_awaiting_consent',
+          kind: "plan_awaiting_consent",
           bookingId: String(booking._id),
         },
       });
     });
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1253,53 +1472,67 @@ export async function collectOfflinePayment(req, res, next) {
     const { id } = req.params;
     const physioId = req.physio?.id;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
     if (!physioId) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.physioId?.toString() !== physioId) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
-    if (booking.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Only home bookings support offline collection' });
+    if (booking.serviceType !== "home") {
+      return res
+        .status(400)
+        .json({ message: "Only home bookings support offline collection" });
     }
-    if (booking.homePlanPaymentMode !== 'offline') {
-      return res.status(400).json({ message: 'This booking is not offline payment mode' });
+    if (booking.homePlanPaymentMode !== "offline") {
+      return res
+        .status(400)
+        .json({ message: "This booking is not offline payment mode" });
     }
     if (!isPlanLive(booking.planStatus)) {
-      return res.status(400).json({ message: 'Patient must consent to the plan before collection' });
+      return res.status(400).json({
+        message: "Patient must consent to the plan before collection",
+      });
     }
 
     const ps = booking.payment?.status;
-    if (ps === 'collected' || ps === 'verified') {
+    if (ps === "collected" || ps === "verified") {
       const out = await Booking.findById(id)
-        .populate('userId', 'name phone location coordinates')
-        .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+        .populate("userId", "name phone location coordinates")
+        .populate(
+          "physioId",
+          "name specialization location phone experience pricePerSession pricePerSessionMax",
+        )
         .lean();
       return res.json(out);
     }
-    if (ps !== 'pending') {
-      return res.status(400).json({ message: 'Payment is not awaiting collection' });
+    if (ps !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Payment is not awaiting collection" });
     }
 
     const p = booking.payment || {};
     booking.payment = {
-      mode: 'offline',
-      status: 'collected',
+      mode: "offline",
+      status: "collected",
       amount: p.amount,
       commission: p.commission,
       physioEarning: p.physioEarning,
     };
-    booking.offlinePaymentRejectReason = '';
+    booking.offlinePaymentRejectReason = "";
     await booking.save();
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1314,47 +1547,57 @@ export async function verifyOfflinePayment(req, res, next) {
   try {
     const { id } = req.params;
     if (!req.admin) {
-      return res.status(403).json({ message: 'Admin only' });
+      return res.status(403).json({ message: "Admin only" });
     }
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (booking.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Only home bookings support offline verification' });
-    }
-    if (booking.homePlanPaymentMode !== 'offline') {
-      return res.status(400).json({ message: 'This booking is not offline payment mode' });
-    }
-    if (!isPlanLive(booking.planStatus)) {
-      return res.status(400).json({ message: 'Patient must consent to the plan before payment can be verified' });
-    }
-    if (booking.payment?.status !== 'collected') {
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.serviceType !== "home") {
       return res
         .status(400)
-        .json({ message: 'Physiotherapist must mark payment as collected before admin verification' });
+        .json({ message: "Only home bookings support offline verification" });
+    }
+    if (booking.homePlanPaymentMode !== "offline") {
+      return res
+        .status(400)
+        .json({ message: "This booking is not offline payment mode" });
+    }
+    if (!isPlanLive(booking.planStatus)) {
+      return res.status(400).json({
+        message:
+          "Patient must consent to the plan before payment can be verified",
+      });
+    }
+    if (booking.payment?.status !== "collected") {
+      return res.status(400).json({
+        message:
+          "Physiotherapist must mark payment as collected before admin verification",
+      });
     }
     if (booking.offlinePaymentVerified) {
-      return res.status(400).json({ message: 'Offline payment already verified' });
+      return res
+        .status(400)
+        .json({ message: "Offline payment already verified" });
     }
 
     const rupees = bookingAmountRupees(booking);
 
     booking.offlinePaymentVerified = true;
-    booking.offlinePaymentRejectReason = '';
-    booking.paymentStatus = 'held';
+    booking.offlinePaymentRejectReason = "";
+    booking.paymentStatus = "held";
     booking.paidAt = booking.paidAt || new Date();
-    booking.sessionStatus = booking.sessionStatus || 'scheduled';
+    booking.sessionStatus = booking.sessionStatus || "scheduled";
     // Preserve the commission/physioEarning already set by createHomePlan.
     // That function computes physioEarning from the undiscounted subtotal so the
     // physio always receives 80% of the base rate, with the platform absorbing the
     // plan discount. Recomputing here on the (discounted) totalAmount would
     // incorrectly reduce physioEarning.
     booking.payment = {
-      mode: 'offline',
-      status: 'verified',
+      mode: "offline",
+      status: "verified",
       amount: rupees,
       commission: booking.payment?.commission ?? null,
       physioEarning: booking.payment?.physioEarning ?? null,
@@ -1364,8 +1607,11 @@ export async function verifyOfflinePayment(req, res, next) {
     await applyOfflineVerificationWallet(booking);
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
 
     if (out?.userId?.phone) {
@@ -1390,30 +1636,37 @@ export async function rejectOfflinePayment(req, res, next) {
   try {
     const { id } = req.params;
     if (!req.admin) {
-      return res.status(403).json({ message: 'Admin only' });
+      return res.status(403).json({ message: "Admin only" });
     }
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
-    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    const reason = String(req.body?.reason || "")
+      .trim()
+      .slice(0, 500);
     if (!reason) {
-      return res.status(400).json({ message: 'reason is required' });
+      return res.status(400).json({ message: "reason is required" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (booking.serviceType !== 'home' || booking.homePlanPaymentMode !== 'offline') {
-      return res.status(400).json({ message: 'Not an offline home booking' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (
+      booking.serviceType !== "home" ||
+      booking.homePlanPaymentMode !== "offline"
+    ) {
+      return res.status(400).json({ message: "Not an offline home booking" });
     }
-    if (booking.payment?.status !== 'collected') {
-      return res.status(400).json({ message: 'Only collected payments can be rejected' });
+    if (booking.payment?.status !== "collected") {
+      return res
+        .status(400)
+        .json({ message: "Only collected payments can be rejected" });
     }
 
     const p = booking.payment || {};
     booking.payment = {
-      mode: 'offline',
-      status: 'pending',
+      mode: "offline",
+      status: "pending",
       amount: p.amount,
       commission: p.commission,
       physioEarning: p.physioEarning,
@@ -1422,8 +1675,11 @@ export async function rejectOfflinePayment(req, res, next) {
     await booking.save();
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1435,54 +1691,61 @@ export async function consentToPlan(req, res, next) {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.userId?.toString() !== userId) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
-    if (booking.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Only home bookings need plan consent' });
+    if (booking.serviceType !== "home") {
+      return res
+        .status(400)
+        .json({ message: "Only home bookings need plan consent" });
     }
     if (!isAwaitingPatientConsent(booking.planStatus)) {
-      return res.status(400).json({ message: 'Plan is not awaiting consent' });
+      return res.status(400).json({ message: "Plan is not awaiting consent" });
     }
 
     const now = new Date();
-    booking.planStatus = 'live';
+    booking.planStatus = "live";
     booking.patientConsentedAt = now;
     booking.planLiveAt = now;
-    booking.workflowStatus = 'plan_live';
+    booking.workflowStatus = "plan_live";
     await booking.save();
 
     fireBookingPush(async () => {
       if (booking.managerId) {
         await notifyExpoUsers([booking.managerId], {
-          title: 'Patient consented to plan',
-          body: 'You can assign a physiotherapist and record payment.',
-          data: { kind: 'plan_live', bookingId: String(booking._id) },
+          title: "Patient consented to plan",
+          body: "You can assign a physiotherapist and record payment.",
+          data: { kind: "plan_live", bookingId: String(booking._id) },
         });
       }
       if (booking.physioId) {
-        const physioLoginId = await findUserIdForPhysioProfile(booking.physioId);
+        const physioLoginId = await findUserIdForPhysioProfile(
+          booking.physioId,
+        );
         if (physioLoginId) {
           await notifyExpoUsers([physioLoginId], {
-            title: 'Plan is live',
-            body: 'The patient consented to the home care plan.',
-            data: { kind: 'plan_live', bookingId: String(booking._id) },
+            title: "Plan is live",
+            body: "The patient consented to the home care plan.",
+            data: { kind: "plan_live", bookingId: String(booking._id) },
           });
         }
       }
     });
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates pincode')
-      .populate('managerId', 'name phone')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates pincode")
+      .populate("managerId", "name phone")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1495,39 +1758,47 @@ export async function approveHomePlan(req, res, next) {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (booking.userId?.toString() !== userId) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
-    if (booking.serviceType !== 'home') {
-      return res.status(400).json({ message: 'Only home bookings need plan approval' });
+    if (booking.serviceType !== "home") {
+      return res
+        .status(400)
+        .json({ message: "Only home bookings need plan approval" });
     }
-    if (booking.planStatus === 'live' || booking.planStatus === 'approved') {
+    if (booking.planStatus === "live" || booking.planStatus === "approved") {
       const out = await Booking.findById(id)
-        .populate('userId', 'name phone location coordinates')
-        .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+        .populate("userId", "name phone location coordinates")
+        .populate(
+          "physioId",
+          "name specialization location phone experience pricePerSession pricePerSessionMax",
+        )
         .lean();
       return res.json(out);
     }
     if (!isAwaitingPatientConsent(booking.planStatus)) {
-      return res.status(400).json({ message: 'Plan is not ready for consent' });
+      return res.status(400).json({ message: "Plan is not ready for consent" });
     }
 
-    booking.planStatus = 'live';
+    booking.planStatus = "live";
     booking.patientConsentedAt = new Date();
     booking.planLiveAt = booking.patientConsentedAt;
-    booking.workflowStatus = 'plan_live';
+    booking.workflowStatus = "plan_live";
     await booking.save();
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1541,12 +1812,12 @@ export async function rescheduleBooking(req, res, next) {
     const isAdmin = Boolean(req.admin);
     const physioId = req.physio?.id;
     const managerUserId = req.user?.id;
-    const isManager = req.auth?.role === 'care_manager';
+    const isManager = req.auth?.role === "care_manager";
     if (!isAdmin && !physioId && !isManager) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const {
@@ -1556,60 +1827,78 @@ export async function rescheduleBooking(req, res, next) {
       assessmentVisit: rawAssessmentVisit,
     } = req.body || {};
     if (!date || !timeSlot) {
-      return res.status(400).json({ message: 'date and timeSlot are required' });
+      return res
+        .status(400)
+        .json({ message: "date and timeSlot are required" });
     }
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmd = todayYMDLocal();
     if (date < todayYmd) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
     if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
 
     if (!isAdmin) {
       if (isManager) {
         if (booking.managerId?.toString() !== String(managerUserId)) {
-          return res.status(403).json({ message: 'Forbidden' });
+          return res.status(403).json({ message: "Forbidden" });
         }
       } else if (booking.physioId?.toString() !== physioId) {
-        return res.status(403).json({ message: 'Forbidden' });
+        return res.status(403).json({ message: "Forbidden" });
       }
     }
 
-    if (booking.sessionStatus === 'completed') {
-      return res.status(400).json({ message: 'Cannot reschedule a completed session' });
+    if (booking.sessionStatus === "completed") {
+      return res
+        .status(400)
+        .json({ message: "Cannot reschedule a completed session" });
     }
 
-    const hasSchedule = Array.isArray(booking.schedule) && booking.schedule.length > 0;
+    const hasSchedule =
+      Array.isArray(booking.schedule) && booking.schedule.length > 0;
     /** Complimentary assessment / primary booking.date — do not touch plan schedule rows. */
     const assessmentVisitOnly = Boolean(rawAssessmentVisit);
+    let previousDate = booking.date;
+    let previousTime = booking.timeSlot;
 
     if (assessmentVisitOnly) {
       if (booking.assessmentCompletedAt) {
-        return res.status(400).json({ message: 'Cannot reschedule a completed assessment visit' });
+        return res
+          .status(400)
+          .json({ message: "Cannot reschedule a completed assessment visit" });
       }
       if (booking.date === date && booking.timeSlot === normalizedTimeSlot) {
-        return res.status(400).json({ message: 'Already scheduled for this slot' });
+        return res
+          .status(400)
+          .json({ message: "Already scheduled for this slot" });
       }
       if (
         Array.isArray(booking.schedule) &&
         booking.schedule.some(
-          (s) => String(s.date) === String(date) && String(s.time) === normalizedTimeSlot,
+          (s) =>
+            String(s.date) === String(date) &&
+            String(s.time) === normalizedTimeSlot,
         )
       ) {
         return res.status(400).json({
-          message: 'Another visit on this booking already uses that date and time',
+          message:
+            "Another visit on this booking already uses that date and time",
         });
       }
       const conflict = await hasPhysioSlotConflict({
@@ -1633,10 +1922,16 @@ export async function rescheduleBooking(req, res, next) {
       let sub = null;
 
       if (hasSchedule) {
-        if (rawSessionId && mongoose.isValidObjectId(rawSessionId) && String(rawSessionId) !== String(booking._id)) {
-          const idx = booking.schedule.findIndex((s) => s._id && String(s._id) === String(rawSessionId));
+        if (
+          rawSessionId &&
+          mongoose.isValidObjectId(rawSessionId) &&
+          String(rawSessionId) !== String(booking._id)
+        ) {
+          const idx = booking.schedule.findIndex(
+            (s) => s._id && String(s._id) === String(rawSessionId),
+          );
           if (idx < 0) {
-            return res.status(404).json({ message: 'Session not found' });
+            return res.status(404).json({ message: "Session not found" });
           }
           scheduleIndex = idx;
           sub = booking.schedule[idx];
@@ -1648,34 +1943,51 @@ export async function rescheduleBooking(req, res, next) {
 
       const oldDate = hasSchedule && sub ? sub.date : booking.date;
       const oldTime = hasSchedule && sub ? sub.time : booking.timeSlot;
+      previousDate = oldDate;
+      previousTime = oldTime;
 
       if (oldDate === date && oldTime === normalizedTimeSlot) {
-        return res.status(400).json({ message: 'Already scheduled for this slot' });
+        return res
+          .status(400)
+          .json({ message: "Already scheduled for this slot" });
       }
 
       if (hasSchedule) {
         const duplicateInSchedule = booking.schedule.some((s, i) => {
           if (i === scheduleIndex) return false;
-          return String(s.date) === String(date) && String(s.time) === normalizedTimeSlot;
+          return (
+            String(s.date) === String(date) &&
+            String(s.time) === normalizedTimeSlot
+          );
         });
         if (duplicateInSchedule) {
           return res.status(400).json({
-            message: 'Another visit on this booking already uses that date and time',
+            message:
+              "Another visit on this booking already uses that date and time",
           });
         }
       }
 
-      const updatesPrimarySlot = !hasSchedule || scheduleIndex === 0;
-      if (updatesPrimarySlot) {
-        const conflict = await hasPhysioSlotConflict({
-          bookingId: booking._id,
-          physioId: booking.physioId,
-          date,
-          timeSlot: normalizedTimeSlot,
-        });
-        if (conflict) {
-          return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
-        }
+      const keepsAssessmentPrimary =
+        booking.serviceType === "home" &&
+        Boolean(booking.managerId || booking.assessmentCompletedAt) &&
+        booking.planCreatedByRole !== "physio" &&
+        booking.carePath !== "technique_managed" &&
+        booking.carePath !== "technique_direct";
+
+      // With a complimentary assessment on booking.date, schedule rows are treatment
+      // only — never overwrite the assessment slot when moving a treatment visit.
+      const updatesPrimarySlot =
+        (!hasSchedule || scheduleIndex === 0) && !keepsAssessmentPrimary;
+
+      const conflict = await hasPhysioSlotConflict({
+        bookingId: booking._id,
+        physioId: booking.physioId,
+        date,
+        timeSlot: normalizedTimeSlot,
+      });
+      if (conflict) {
+        return res.status(409).json({ message: PHYSIO_SLOT_CONFLICT_MSG });
       }
 
       booking.rescheduled = true;
@@ -1703,8 +2015,13 @@ export async function rescheduleBooking(req, res, next) {
       throw e;
     }
 
-    const actor =
-      isAdmin ? 'admin' : isManager ? 'manager' : physioId ? 'physio' : 'unknown';
+    const actor = isAdmin
+      ? "admin"
+      : isManager
+        ? "manager"
+        : physioId
+          ? "physio"
+          : "unknown";
 
     fireBookingPush(async () => {
       const patientId = booking.userId?.toString();
@@ -1713,7 +2030,7 @@ export async function rescheduleBooking(req, res, next) {
         : null;
       const summary = `${date} · ${normalizedTimeSlot}`;
       const data = {
-        kind: 'booking_rescheduled',
+        kind: "booking_rescheduled",
         bookingId: String(booking._id),
       };
 
@@ -1721,14 +2038,14 @@ export async function rescheduleBooking(req, res, next) {
         const ids = [patientId, physioLoginId?.toString()].filter(Boolean);
         if (ids.length > 0) {
           await notifyExpoUsers(ids, {
-            title: 'Visit rescheduled',
+            title: "Visit rescheduled",
             body: `Booking updated to ${summary}. Open the app for details.`,
             data,
           });
         }
       } else if (patientId) {
         await notifyExpoUsers([patientId], {
-          title: 'Visit rescheduled',
+          title: "Visit rescheduled",
           body: `Your physiotherapist moved the visit to ${summary}.`,
           data,
         });
@@ -1738,7 +2055,9 @@ export async function rescheduleBooking(req, res, next) {
     // Patient WhatsApp for every reschedule (physio, care manager, or admin)
     fireBookingPush(async () => {
       try {
-        const patientUser = await User.findById(booking.userId).select('phone name').lean();
+        const patientUser = await User.findById(booking.userId)
+          .select("phone name")
+          .lean();
         if (!patientUser?.phone) {
           console.warn(
             `[WhatsApp][visit_rescheduled] skip — no patient phone booking=${booking._id} actor=${actor}`,
@@ -1746,16 +2065,19 @@ export async function rescheduleBooking(req, res, next) {
           return;
         }
 
-        let rescheduledBy = 'PhysiOkhom';
+        let rescheduledBy = "PhysiOkhom";
         if (isManager) {
-          const mgr = await User.findById(managerUserId).select('name').lean();
-          rescheduledBy = String(mgr?.name || '').trim() || 'your care manager';
+          const mgr = await User.findById(managerUserId).select("name").lean();
+          rescheduledBy = String(mgr?.name || "").trim() || "your care manager";
         } else if (physioId || (!isAdmin && booking.physioId)) {
           const physioDocId = physioId || booking.physioId;
-          const physio = await Physiotherapist.findById(physioDocId).select('name').lean();
-          rescheduledBy = String(physio?.name || '').trim() || 'your physiotherapist';
+          const physio = await Physiotherapist.findById(physioDocId)
+            .select("name")
+            .lean();
+          rescheduledBy =
+            String(physio?.name || "").trim() || "your physiotherapist";
         } else if (isAdmin) {
-          rescheduledBy = 'PhysiOkhom';
+          rescheduledBy = "PhysiOkhom";
         }
 
         console.log(
@@ -1768,17 +2090,25 @@ export async function rescheduleBooking(req, res, next) {
           rescheduledBy,
           date,
           time: normalizedTimeSlot,
+          previousDate,
+          previousTime,
           booking,
           bookingId: booking._id,
         });
       } catch (waErr) {
-        console.warn(`[WhatsApp][visit_rescheduled] actor=${actor}`, waErr?.message || waErr);
+        console.warn(
+          `[WhatsApp][visit_rescheduled] actor=${actor}`,
+          waErr?.message || waErr,
+        );
       }
     });
 
     const out = await Booking.findById(id)
-      .populate('userId', 'name phone location coordinates')
-      .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+      .populate("userId", "name phone location coordinates")
+      .populate(
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax",
+      )
       .lean();
     return res.json(out);
   } catch (err) {
@@ -1788,26 +2118,29 @@ export async function rescheduleBooking(req, res, next) {
 
 async function fetchBookingPopulated(bookingId) {
   return Booking.findById(bookingId)
-    .populate('userId', 'name phone location coordinates')
-    .populate('physioId', 'name specialization location phone experience pricePerSession pricePerSessionMax')
+    .populate("userId", "name phone location coordinates")
+    .populate(
+      "physioId",
+      "name specialization location phone experience pricePerSession pricePerSessionMax",
+    )
     .lean();
 }
 
 function canManageBookingSessions(req, booking, res) {
   if (req.admin) return true;
   if (
-    req.auth?.role === 'care_manager' &&
+    req.auth?.role === "care_manager" &&
     booking.managerId?.toString() === String(req.user?.id)
   ) {
     return true;
   }
-  res.status(403).json({ message: 'Forbidden' });
+  res.status(403).json({ message: "Forbidden" });
   return false;
 }
 
 function ensureAdmin(req, res) {
   if (!req.admin) {
-    res.status(403).json({ message: 'Admin only' });
+    res.status(403).json({ message: "Admin only" });
     return false;
   }
   return true;
@@ -1818,42 +2151,60 @@ export async function addAdminBookingSession(req, res, next) {
     const { id } = req.params;
     if (!ensureAdmin(req, res)) return;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
 
     const { date, timeSlot } = req.body || {};
     if (!date || !timeSlot) {
-      return res.status(400).json({ message: 'date and timeSlot are required' });
+      return res
+        .status(400)
+        .json({ message: "date and timeSlot are required" });
     }
     if (!isValidDateString(date)) {
-      return res.status(400).json({ message: 'date must be YYYY-MM-DD' });
+      return res.status(400).json({ message: "date must be YYYY-MM-DD" });
     }
     const normalizedTimeSlot = normalizeTimeSlot(timeSlot);
     if (!DAILY_SLOTS.includes(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'timeSlot is not available' });
+      return res.status(400).json({ message: "timeSlot is not available" });
     }
 
     const todayYmd = todayYMDLocal();
     if (date < todayYmd) {
-      return res.status(400).json({ message: 'Date must be today or in the future' });
+      return res
+        .status(400)
+        .json({ message: "Date must be today or in the future" });
     }
     if (date === todayYmd && isSlotStartInPastForToday(normalizedTimeSlot)) {
-      return res.status(400).json({ message: 'This time slot is no longer available' });
+      return res
+        .status(400)
+        .json({ message: "This time slot is no longer available" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (booking.sessionStatus === 'completed' || booking.status === 'completed') {
-      return res.status(400).json({ message: 'Cannot modify sessions for a completed booking' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (
+      booking.sessionStatus === "completed" ||
+      booking.status === "completed"
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Cannot modify sessions for a completed booking" });
     }
 
-    const scheduleBase = Array.isArray(booking.schedule) && booking.schedule.length > 0
-      ? booking.schedule
-      : [{ date: booking.date, time: booking.timeSlot }];
+    const scheduleBase =
+      Array.isArray(booking.schedule) && booking.schedule.length > 0
+        ? booking.schedule
+        : [{ date: booking.date, time: booking.timeSlot }];
 
-    const duplicate = scheduleBase.some((s) => String(s.date) === String(date) && String(s.time) === normalizedTimeSlot);
+    const duplicate = scheduleBase.some(
+      (s) =>
+        String(s.date) === String(date) &&
+        String(s.time) === normalizedTimeSlot,
+    );
     if (duplicate) {
-      return res.status(400).json({ message: 'That session already exists in this booking schedule' });
+      return res.status(400).json({
+        message: "That session already exists in this booking schedule",
+      });
     }
 
     const conflict = await hasPhysioSlotConflict({
@@ -1884,35 +2235,43 @@ export async function deleteAdminBookingSession(req, res, next) {
   try {
     const { id, sessionId } = req.params;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
     if (!sessionId || !mongoose.isValidObjectId(sessionId)) {
-      return res.status(400).json({ message: 'Invalid session id' });
+      return res.status(400).json({ message: "Invalid session id" });
     }
 
     const booking = await Booking.findById(id);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (!canManageBookingSessions(req, booking, res)) return;
-    if (booking.sessionStatus === 'completed' || booking.status === 'completed') {
-      return res.status(400).json({ message: 'Cannot modify sessions for a completed booking' });
+    if (
+      booking.sessionStatus === "completed" ||
+      booking.status === "completed"
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Cannot modify sessions for a completed booking" });
     }
 
-    const scheduleBase = Array.isArray(booking.schedule) && booking.schedule.length > 0
-      ? booking.schedule
-      : [{ _id: booking._id, date: booking.date, time: booking.timeSlot }];
+    const scheduleBase =
+      Array.isArray(booking.schedule) && booking.schedule.length > 0
+        ? booking.schedule
+        : [{ _id: booking._id, date: booking.date, time: booking.timeSlot }];
 
-    const idx = scheduleBase.findIndex((s) => s?._id && String(s._id) === String(sessionId));
+    const idx = scheduleBase.findIndex(
+      (s) => s?._id && String(s._id) === String(sessionId),
+    );
     if (idx < 0) {
-      return res.status(404).json({ message: 'Session not found' });
+      return res.status(404).json({ message: "Session not found" });
     }
 
     // Removing the last session row collapses to primary-only (empty schedule array).
     if (scheduleBase.length <= 1) {
       const only = scheduleBase[idx];
-      const newDate = String(only.date || '').trim();
+      const newDate = String(only.date || "").trim();
       const newTimeSlot = normalizeTimeSlot(only.time);
       if (!isValidDateString(newDate) || !DAILY_SLOTS.includes(newTimeSlot)) {
-        return res.status(400).json({ message: 'Invalid session data' });
+        return res.status(400).json({ message: "Invalid session data" });
       }
       const oldPrimary = { date: booking.date, timeSlot: booking.timeSlot };
       if (oldPrimary.date !== newDate || oldPrimary.timeSlot !== newTimeSlot) {
@@ -1955,7 +2314,8 @@ export async function deleteAdminBookingSession(req, res, next) {
       });
       if (conflict) {
         return res.status(409).json({
-          message: 'Cannot delete this session because the new primary slot conflicts for this physiotherapist',
+          message:
+            "Cannot delete this session because the new primary slot conflicts for this physiotherapist",
         });
       }
       booking.previousDate = booking.date;
@@ -1985,29 +2345,31 @@ export async function confirmSession(req, res, next) {
   try {
     const userId = req.user?.id;
     const { bookingId, sessionId } = req.params;
-    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
     if (!mongoose.isValidObjectId(bookingId)) {
-      return res.status(400).json({ message: 'Invalid booking id' });
+      return res.status(400).json({ message: "Invalid booking id" });
     }
     if (!sessionId || !mongoose.isValidObjectId(sessionId)) {
-      return res.status(400).json({ message: 'Invalid session id' });
+      return res.status(400).json({ message: "Invalid session id" });
     }
 
     const booking = await Booking.findById(bookingId);
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
     if (String(booking.userId) !== String(userId)) {
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     const entry = booking.schedule?.id?.(sessionId) ?? null;
     if (!entry) {
-      return res.status(404).json({ message: 'Session not found on this booking' });
+      return res
+        .status(404)
+        .json({ message: "Session not found on this booking" });
     }
-    if (entry.status !== 'completed') {
-      return res.status(400).json({ message: 'Session is not completed yet' });
+    if (entry.status !== "completed") {
+      return res.status(400).json({ message: "Session is not completed yet" });
     }
     if (entry.patientConfirmed) {
-      return res.status(400).json({ message: 'Session already confirmed' });
+      return res.status(400).json({ message: "Session already confirmed" });
     }
 
     entry.patientConfirmed = true;
@@ -2015,10 +2377,10 @@ export async function confirmSession(req, res, next) {
     await booking.save();
 
     const out = await Booking.findById(bookingId)
-      .populate('userId', 'name phone location coordinates')
+      .populate("userId", "name phone location coordinates")
       .populate(
-        'physioId',
-        'name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews',
+        "physioId",
+        "name specialization location phone experience pricePerSession pricePerSessionMax avatar avgRating totalReviews",
       )
       .lean();
 
